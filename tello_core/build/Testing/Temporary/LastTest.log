@@ -1,0 +1,24 @@
+Start testing: Jun 18 14:27 EDT
+----------------------------------------------------------
+1/1 Testing: unit_state_parser
+1/1 Test: unit_state_parser
+Command: "/home/gabriel_fernandes/CS 500/tello_core/build/test_state_parser"
+Directory: /home/gabriel_fernandes/CS 500/tello_core/build
+"unit_state_parser" start time: Jun 18 14:27 EDT
+Output:
+----------------------------------------------------------
+[test_state_parser] PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"unit_state_parser" end time: Jun 18 14:27 EDT
+"unit_state_parser" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jun 18 14:27 EDT
+
+offline =   0.00 sec*proc
+
+unit =   0.00 sec*proc
+

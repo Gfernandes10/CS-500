@@ -1,0 +1,105 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.16"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "tello_core",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "tello_cli::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-tello_cli-Debug-d4f4d448e21cfc1d7e57.json",
+					"name" : "tello_cli",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "tello_control_panel::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-tello_control_panel-Debug-999d80e351e5a32ca25e.json",
+					"name" : "tello_control_panel",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "tello_core::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-tello_core-Debug-e94d59b537295da4f28e.json",
+					"name" : "tello_core",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "tello_viewer::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-tello_viewer-Debug-6f1ee44ddc08b001ca28.json",
+					"name" : "tello_viewer",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "test_state_parser::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-test_state_parser-Debug-20aa7ef53489b92137e0.json",
+					"name" : "test_state_parser",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "video_receiver_smoke::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-video_receiver_smoke-Debug-a00156cc7f51e62bf2a9.json",
+					"name" : "video_receiver_smoke",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/gabriel_fernandes/CS 500/tello_core/build",
+		"source" : "/home/gabriel_fernandes/CS 500/tello_core"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 6
+	}
+}
