@@ -75,6 +75,7 @@ ResponseCode CommandExecutor::executeCommandWithResponse(
     }
 
     const bool expects_query_payload = !command.empty() && command.back() == '?';
+    constexpr int32_t kControlFollowupTimeoutMs = 250;
 
     for (int32_t attempt = 1; attempt <= retry_config_.max_attempts; ++attempt) {
         const ResponseCode send_rc = sendCommandNoWait(command);
@@ -119,6 +120,16 @@ ResponseCode CommandExecutor::executeCommandWithResponse(
                 continue;
             }
             return ResponseCode::PARSE_ERROR;
+        }
+
+        // Control commands can occasionally receive a stale "error" from a previous
+        // exchange right before the actual ack for the current command arrives.
+        // Do one short follow-up read to avoid false negatives in logs/state.
+        if (!expects_query_payload && toLower(cleaned) == "error") {
+            const std::string followup = trim(socket_->recvString(kControlFollowupTimeoutMs));
+            if (!followup.empty() && toLower(followup) == "ok") {
+                cleaned = followup;
+            }
         }
 
         response = cleaned;

@@ -1,22 +1,44 @@
 #include "tello/tello_client.hpp"
+#include "tello/state_receiver.hpp"
+#include "tello/video_decoder_ffmpeg.hpp"
+#include "tello/video_receiver.hpp"
+#include "tello/video_stream_assembler.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QPushButton>
+#include <QSlider>
 #include <QSpinBox>
+#include <QStackedWidget>
+#include <QSignalBlocker>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <fstream>
+#include <iostream>
+#include <limits>
+#include <mutex>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -74,6 +96,129 @@ QString wifiQualityLabel(const QString& raw) {
     return QString("wifi: weak (snr=%1)").arg(v);
 }
 
+double metricFromState(const tello::TelloState& s, const QString& metric) {
+    if (metric == "pitch") return static_cast<double>(s.pitch);
+    if (metric == "roll") return static_cast<double>(s.roll);
+    if (metric == "yaw") return static_cast<double>(s.yaw);
+    if (metric == "vgx") return static_cast<double>(s.vgx);
+    if (metric == "vgy") return static_cast<double>(s.vgy);
+    if (metric == "vgz") return static_cast<double>(s.vgz);
+    if (metric == "h") return static_cast<double>(s.h);
+    if (metric == "tof") return static_cast<double>(s.tof);
+    if (metric == "battery" || metric == "bat") return static_cast<double>(s.bat);
+    if (metric == "baro") return s.baro;
+    if (metric == "agx") return s.agx;
+    if (metric == "agy") return s.agy;
+    if (metric == "agz") return s.agz;
+    return 0.0;
+}
+
+class StatePlotWidget final : public QWidget {
+public:
+    explicit StatePlotWidget(QWidget* parent = nullptr) : QWidget(parent) {
+        setMinimumHeight(220);
+    }
+
+    void setSamples(std::vector<tello::StateReceiver::StateSample> samples, QString metric) {
+        samples_ = std::move(samples);
+        metric_ = std::move(metric);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QWidget::paintEvent(event);
+
+        QPainter p(this);
+        p.fillRect(rect(), QColor(20, 24, 28));
+
+        const QRectF plot_rect = rect().adjusted(42, 12, -12, -28);
+        p.setPen(QPen(QColor(80, 86, 94), 1));
+        p.drawRect(plot_rect);
+
+        if (samples_.size() < 2) {
+            p.setPen(QPen(Qt::lightGray));
+            p.drawText(plot_rect, Qt::AlignCenter, "Waiting telemetry...");
+            return;
+        }
+
+        const int64_t t0 = samples_.front().timestamp_ms;
+        const int64_t t1 = samples_.back().timestamp_ms;
+        const double dt = static_cast<double>(std::max<int64_t>(1, t1 - t0));
+
+        double y_min = std::numeric_limits<double>::infinity();
+        double y_max = -std::numeric_limits<double>::infinity();
+        for (const auto& s : samples_) {
+            const double v = metricFromState(s.state, metric_);
+            y_min = std::min(y_min, v);
+            y_max = std::max(y_max, v);
+        }
+
+        if (!std::isfinite(y_min) || !std::isfinite(y_max)) {
+            return;
+        }
+
+        if (std::abs(y_max - y_min) < 1e-9) {
+            y_max += 1.0;
+            y_min -= 1.0;
+        }
+
+        const double y_pad = (y_max - y_min) * 0.08;
+        y_max += y_pad;
+        y_min -= y_pad;
+
+        p.setPen(QPen(QColor(120, 128, 138), 1, Qt::DashLine));
+        for (int i = 0; i <= 4; ++i) {
+            const double t = static_cast<double>(i) / 4.0;
+            const qreal y = plot_rect.bottom() - (t * plot_rect.height());
+            p.drawLine(QPointF(plot_rect.left(), y), QPointF(plot_rect.right(), y));
+
+            const double axis_value = y_min + (t * (y_max - y_min));
+            p.setPen(QPen(QColor(170, 178, 188), 1));
+            p.drawText(QRectF(2, y - 9, plot_rect.left() - 6, 18),
+                       Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(axis_value, 'f', 1));
+            p.setPen(QPen(QColor(120, 128, 138), 1, Qt::DashLine));
+        }
+
+        QPainterPath path;
+        for (size_t i = 0; i < samples_.size(); ++i) {
+            const double tx = static_cast<double>(samples_[i].timestamp_ms - t0) / dt;
+            const double vy = metricFromState(samples_[i].state, metric_);
+            const double ty = (vy - y_min) / (y_max - y_min);
+
+            const qreal x = plot_rect.left() + tx * plot_rect.width();
+            const qreal y = plot_rect.bottom() - ty * plot_rect.height();
+            if (i == 0) {
+                path.moveTo(x, y);
+            } else {
+                path.lineTo(x, y);
+            }
+        }
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0, 200, 160), 2));
+        p.drawPath(path);
+
+        p.setPen(QPen(Qt::lightGray));
+        p.drawText(QPointF(plot_rect.left(), 10),
+                   QString("current=%1")
+                       .arg(metricFromState(samples_.back().state, metric_), 0, 'f', 2));
+        p.drawText(QPointF(plot_rect.left(), plot_rect.top() - 2),
+                   QString("%1  [min=%2 max=%3]")
+                       .arg(metric_)
+                       .arg(y_min, 0, 'f', 2)
+                       .arg(y_max, 0, 'f', 2));
+        p.drawText(QPointF(plot_rect.left(), rect().bottom() - 6), "t=0");
+        p.drawText(QPointF(plot_rect.right() - 80, rect().bottom() - 6),
+                   QString("t=%1 ms").arg(t1 - t0));
+    }
+
+private:
+    std::vector<tello::StateReceiver::StateSample> samples_;
+    QString metric_ = "pitch";
+};
+
 class ControlPanelWidget final : public QWidget {
 public:
     ControlPanelWidget() {
@@ -84,10 +229,13 @@ public:
 
         status_label_ = new QLabel(this);
         wifi_quality_label_ = new QLabel("wifi: unknown", this);
+        battery_status_label_ = new QLabel("battery: --%", this);
 
         auto* status_row = new QHBoxLayout();
         status_row->addWidget(status_label_, 1);
+        status_row->addStretch(1);
         status_row->addWidget(wifi_quality_label_);
+        status_row->addWidget(battery_status_label_);
         root->addLayout(status_row);
 
         auto* conn_row = new QHBoxLayout();
@@ -98,19 +246,48 @@ public:
         conn_row->addStretch(1);
         root->addLayout(conn_row);
 
-        buildReadGroup(root);
-        buildAutoRefreshAndCsvGroup(root);
-        buildSetGroup(root);
         buildControlBasicsGroup(root);
-        buildMotionGroup(root);
-        buildAdvancedGroup(root);
-        buildRawGroup(root);
 
         log_view_ = new QTextEdit(this);
         log_view_->setReadOnly(true);
-        root->addWidget(log_view_, 1);
+        log_view_->setMinimumHeight(180);
+        root->addWidget(log_view_);
+
+        auto* panel_sel_row = new QHBoxLayout();
+        panel_sel_row->addWidget(new QLabel("Panel:", this));
+        panel_selector_ = new QComboBox(this);
+        panel_selector_->addItem("Config");
+        panel_selector_->addItem("Operation");
+        panel_sel_row->addWidget(panel_selector_);
+        panel_sel_row->addStretch(1);
+        root->addLayout(panel_sel_row);
+
+        panel_stack_ = new QStackedWidget(this);
+
+        auto* config_page = new QWidget(this);
+        auto* config_layout = new QVBoxLayout(config_page);
+        buildAutoRefreshAndCsvGroup(config_layout);
+        buildReadGroup(config_layout);
+        buildSetGroup(config_layout);
+        buildMotionGroup(config_layout);
+        buildRawGroup(config_layout);
+        config_layout->addStretch(1);
+        panel_stack_->addWidget(config_page);
+
+        auto* operation_page = new QWidget(this);
+        auto* operation_layout = new QVBoxLayout(operation_page);
+        buildRcOperationGroup(operation_layout);
+        buildStateHistoryGroup(operation_layout);
+        buildVisionGroup(operation_layout);
+        operation_layout->addStretch(1);
+        panel_stack_->addWidget(operation_page);
+
+        root->addWidget(panel_stack_, 1);
 
         auto_refresh_timer_ = new QTimer(this);
+        rc_stream_timer_ = new QTimer(this);
+        state_view_timer_ = new QTimer(this);
+        vision_view_timer_ = new QTimer(this);
 
         connect(connect_btn, &QPushButton::clicked, this, [this]() { (void)connectSdk(); });
         connect(disconnect_btn, &QPushButton::clicked, this, [this]() { disconnectSdk(); });
@@ -123,6 +300,21 @@ public:
             runReadCommand("wifi?", "auto");
         });
 
+        connect(rc_stream_timer_, &QTimer::timeout, this, [this]() { sendRcStreamTick(); });
+
+        connect(state_view_timer_, &QTimer::timeout, this, [this]() { refreshStateHistoryView(); });
+        state_view_timer_->start(250);
+
+        connect(vision_view_timer_, &QTimer::timeout, this, [this]() { refreshVisionView(); });
+        vision_view_timer_->start(120);
+
+        connect(panel_selector_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int idx) {
+            if (panel_stack_ != nullptr) {
+                panel_stack_->setCurrentIndex(idx);
+            }
+            appendLog(QString("panel switched to %1").arg(idx == 0 ? "Config" : "Operation"));
+        });
+
         appendLog("Panel ready. Click Connect + SDK first.");
         appendLog("Delivery C active: optional auto-refresh + CSV export.");
         appendLog("Buttons added for control/set/read command families.");
@@ -130,7 +322,10 @@ public:
     }
 
     ~ControlPanelWidget() override {
+        stopVisionPipeline();
+        setRcStreamingEnabled(false, "panel shutdown");
         closeCsv();
+        state_receiver_.stop();
         client_.shutdown();
     }
 
@@ -222,7 +417,7 @@ private:
     }
 
     void buildSetGroup(QVBoxLayout* root) {
-        auto* g = new QGroupBox("Set Commands", this);
+        auto* g = new QGroupBox("Set Speed", this);
         auto* l = new QGridLayout(g);
 
         speed_spin_ = new QSpinBox(g);
@@ -230,96 +425,117 @@ private:
         speed_spin_->setValue(50);
         auto* speed_btn = new QPushButton("Send speed x", g);
 
-        rc_a_ = new QSpinBox(g); rc_a_->setRange(-100, 100);
-        rc_b_ = new QSpinBox(g); rc_b_->setRange(-100, 100);
-        rc_c_ = new QSpinBox(g); rc_c_->setRange(-100, 100);
-        rc_d_ = new QSpinBox(g); rc_d_->setRange(-100, 100);
-        auto* rc_btn = new QPushButton("Send rc a b c d", g);
-
-        wifi_ssid_ = new QLineEdit(g);
-        wifi_pass_ = new QLineEdit(g);
-        auto* wifi_btn = new QPushButton("Send wifi ssid pass", g);
-
-        ap_ssid_ = new QLineEdit(g);
-        ap_pass_ = new QLineEdit(g);
-        auto* ap_btn = new QPushButton("Send ap ssid pass", g);
-
-        mdirection_spin_ = new QSpinBox(g);
-        mdirection_spin_->setRange(0, 2);
-        auto* mdirection_btn = new QPushButton("Send mdirection x", g);
-
-        auto* mon_btn = new QPushButton("mon", g);
-        auto* moff_btn = new QPushButton("moff", g);
-
         l->addWidget(new QLabel("speed x"), 0, 0);
         l->addWidget(speed_spin_, 0, 1);
         l->addWidget(speed_btn, 0, 2);
 
-        auto* rc_row = new QHBoxLayout();
-        rc_row->addWidget(rc_a_); rc_row->addWidget(rc_b_); rc_row->addWidget(rc_c_); rc_row->addWidget(rc_d_);
-        auto* rc_host = new QWidget(g);
-        rc_host->setLayout(rc_row);
-        l->addWidget(new QLabel("rc a b c d"), 1, 0);
-        l->addWidget(rc_host, 1, 1);
-        l->addWidget(rc_btn, 1, 2);
-
-        auto* wifi_row = new QHBoxLayout();
-        wifi_row->addWidget(wifi_ssid_); wifi_row->addWidget(wifi_pass_);
-        auto* wifi_host = new QWidget(g);
-        wifi_host->setLayout(wifi_row);
-        l->addWidget(new QLabel("wifi ssid pass"), 2, 0);
-        l->addWidget(wifi_host, 2, 1);
-        l->addWidget(wifi_btn, 2, 2);
-
-        auto* ap_row = new QHBoxLayout();
-        ap_row->addWidget(ap_ssid_); ap_row->addWidget(ap_pass_);
-        auto* ap_host = new QWidget(g);
-        ap_host->setLayout(ap_row);
-        l->addWidget(new QLabel("ap ssid pass"), 3, 0);
-        l->addWidget(ap_host, 3, 1);
-        l->addWidget(ap_btn, 3, 2);
-
-        l->addWidget(new QLabel("mdirection x"), 4, 0);
-        l->addWidget(mdirection_spin_, 4, 1);
-        l->addWidget(mdirection_btn, 4, 2);
-
-        auto* mp_row = new QHBoxLayout();
-        mp_row->addWidget(mon_btn);
-        mp_row->addWidget(moff_btn);
-        auto* mp_host = new QWidget(g);
-        mp_host->setLayout(mp_row);
-        l->addWidget(new QLabel("mission pad"), 5, 0);
-        l->addWidget(mp_host, 5, 1, 1, 2);
-
         connect(speed_btn, &QPushButton::clicked, this, [this]() {
             runCommandWithResponse("speed " + std::to_string(speed_spin_->value()), "manual");
         });
-        connect(rc_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("rc "
-                + std::to_string(rc_a_->value()) + " "
-                + std::to_string(rc_b_->value()) + " "
-                + std::to_string(rc_c_->value()) + " "
-                + std::to_string(rc_d_->value()), "manual");
+
+        root->addWidget(g);
+    }
+
+    void buildRcOperationGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("RC Operation", this);
+        auto* l = new QGridLayout(g);
+
+        rc_stream_check_ = new QCheckBox("Continuous RC stream", g);
+        rc_stream_interval_ms_ = new QSpinBox(g);
+        rc_stream_interval_ms_->setRange(20, 200);
+        rc_stream_interval_ms_->setValue(50);
+
+        rc_lr_slider_ = new QSlider(Qt::Horizontal, g);
+        rc_fb_slider_ = new QSlider(Qt::Horizontal, g);
+        rc_ud_slider_ = new QSlider(Qt::Horizontal, g);
+        rc_yaw_slider_ = new QSlider(Qt::Horizontal, g);
+        rc_lr_value_ = new QLabel("0", g);
+        rc_fb_value_ = new QLabel("0", g);
+        rc_ud_value_ = new QLabel("0", g);
+        rc_yaw_value_ = new QLabel("0", g);
+
+        auto setup_slider = [](QSlider* s) {
+            s->setRange(-100, 100);
+            s->setSingleStep(10);
+            s->setPageStep(10);
+            s->setTickInterval(10);
+            s->setTickPosition(QSlider::TicksBelow);
+            s->setValue(0);
+        };
+
+        setup_slider(rc_lr_slider_);
+        setup_slider(rc_fb_slider_);
+        setup_slider(rc_ud_slider_);
+        setup_slider(rc_yaw_slider_);
+
+        auto* send_once_btn = new QPushButton("Send rc once", g);
+        auto* zero_send_btn = new QPushButton("Zero all + send", g);
+
+        l->addWidget(rc_stream_check_, 0, 0, 1, 2);
+        l->addWidget(new QLabel("interval ms:"), 0, 2);
+        l->addWidget(rc_stream_interval_ms_, 0, 3);
+
+        l->addWidget(new QLabel("LR (a)"), 1, 0);
+        l->addWidget(rc_lr_slider_, 1, 1, 1, 2);
+        l->addWidget(rc_lr_value_, 1, 3);
+
+        l->addWidget(new QLabel("FB (b)"), 2, 0);
+        l->addWidget(rc_fb_slider_, 2, 1, 1, 2);
+        l->addWidget(rc_fb_value_, 2, 3);
+
+        l->addWidget(new QLabel("UD (c)"), 3, 0);
+        l->addWidget(rc_ud_slider_, 3, 1, 1, 2);
+        l->addWidget(rc_ud_value_, 3, 3);
+
+        l->addWidget(new QLabel("Yaw (d)"), 4, 0);
+        l->addWidget(rc_yaw_slider_, 4, 1, 1, 2);
+        l->addWidget(rc_yaw_value_, 4, 3);
+
+        l->addWidget(send_once_btn, 5, 0, 1, 2);
+        l->addWidget(zero_send_btn, 5, 2, 1, 2);
+
+        auto connect_slider = [this](QSlider* s, QLabel* value_label) {
+            connect(s, &QSlider::valueChanged, this, [this, s, value_label](int value) {
+                const int snapped = ((value >= 0 ? value + 5 : value - 5) / 10) * 10;
+                if (snapped != value) {
+                    QSignalBlocker blocker(s);
+                    s->setValue(snapped);
+                }
+                if (value_label != nullptr) {
+                    value_label->setText(QString::number(s->value()));
+                }
+            });
+        };
+
+        connect_slider(rc_lr_slider_, rc_lr_value_);
+        connect_slider(rc_fb_slider_, rc_fb_value_);
+        connect_slider(rc_ud_slider_, rc_ud_value_);
+        connect_slider(rc_yaw_slider_, rc_yaw_value_);
+
+        connect(send_once_btn, &QPushButton::clicked, this, [this]() {
+            runCommandWithResponse(buildRcCommandFromInputs(), "manual");
         });
-        connect(wifi_btn, &QPushButton::clicked, this, [this]() {
-            if (wifi_ssid_->text().trimmed().isEmpty() || wifi_pass_->text().isEmpty()) {
-                appendLog("wifi command requires ssid and pass");
+
+        connect(zero_send_btn, &QPushButton::clicked, this, [this]() {
+            setRcSliders(0, 0, 0, 0);
+            runCommandWithResponse("rc 0 0 0 0", "manual");
+        });
+
+        connect(rc_stream_check_, &QCheckBox::toggled, this, [this](bool enabled) {
+            if (enabled && !sdk_ready_) {
+                appendLog("continuous RC requires Connect + SDK first");
+                QSignalBlocker blocker(rc_stream_check_);
+                rc_stream_check_->setChecked(false);
                 return;
             }
-            runCommandWithResponse("wifi " + wifi_ssid_->text().trimmed().toStdString() + " " + wifi_pass_->text().toStdString(), "manual");
+            setRcStreamingEnabled(enabled, enabled ? "enabled" : "disabled");
         });
-        connect(ap_btn, &QPushButton::clicked, this, [this]() {
-            if (ap_ssid_->text().trimmed().isEmpty() || ap_pass_->text().isEmpty()) {
-                appendLog("ap command requires ssid and pass");
-                return;
+
+        connect(rc_stream_interval_ms_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
+            if (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) {
+                rc_stream_timer_->start(rc_stream_interval_ms_->value());
             }
-            runCommandWithResponse("ap " + ap_ssid_->text().trimmed().toStdString() + " " + ap_pass_->text().toStdString(), "manual");
         });
-        connect(mdirection_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("mdirection " + std::to_string(mdirection_spin_->value()), "manual");
-        });
-        connect(mon_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("mon", "manual"); });
-        connect(moff_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("moff", "manual"); });
 
         root->addWidget(g);
     }
@@ -405,116 +621,6 @@ private:
         root->addWidget(g);
     }
 
-    void buildAdvancedGroup(QVBoxLayout* root) {
-        auto* g = new QGroupBox("Control Commands (advanced)", this);
-        auto* l = new QGridLayout(g);
-
-        go_x_ = new QSpinBox(g); go_x_->setRange(-500, 500);
-        go_y_ = new QSpinBox(g); go_y_->setRange(-500, 500);
-        go_z_ = new QSpinBox(g); go_z_->setRange(-500, 500); go_z_->setValue(50);
-        go_speed_ = new QSpinBox(g); go_speed_->setRange(10, 100); go_speed_->setValue(30);
-        auto* go_btn = new QPushButton("Send go x y z speed", g);
-
-        go_mid_x_ = new QSpinBox(g); go_mid_x_->setRange(-500, 500);
-        go_mid_y_ = new QSpinBox(g); go_mid_y_->setRange(-500, 500);
-        go_mid_z_ = new QSpinBox(g); go_mid_z_->setRange(-500, 500); go_mid_z_->setValue(50);
-        go_mid_speed_ = new QSpinBox(g); go_mid_speed_->setRange(10, 100); go_mid_speed_->setValue(30);
-        go_mid_id_ = new QSpinBox(g); go_mid_id_->setRange(1, 8);
-        auto* go_mid_btn = new QPushButton("Send go ... mid", g);
-
-        curve_x1_ = new QSpinBox(g); curve_x1_->setRange(-500, 500);
-        curve_y1_ = new QSpinBox(g); curve_y1_->setRange(-500, 500);
-        curve_z1_ = new QSpinBox(g); curve_z1_->setRange(-500, 500); curve_z1_->setValue(50);
-        curve_x2_ = new QSpinBox(g); curve_x2_->setRange(-500, 500); curve_x2_->setValue(100);
-        curve_y2_ = new QSpinBox(g); curve_y2_->setRange(-500, 500);
-        curve_z2_ = new QSpinBox(g); curve_z2_->setRange(-500, 500); curve_z2_->setValue(50);
-        curve_speed_ = new QSpinBox(g); curve_speed_->setRange(10, 60); curve_speed_->setValue(20);
-        auto* curve_btn = new QPushButton("Send curve", g);
-
-        curve_mid_x1_ = new QSpinBox(g); curve_mid_x1_->setRange(-500, 500);
-        curve_mid_y1_ = new QSpinBox(g); curve_mid_y1_->setRange(-500, 500);
-        curve_mid_z1_ = new QSpinBox(g); curve_mid_z1_->setRange(-500, 500); curve_mid_z1_->setValue(50);
-        curve_mid_x2_ = new QSpinBox(g); curve_mid_x2_->setRange(-500, 500); curve_mid_x2_->setValue(100);
-        curve_mid_y2_ = new QSpinBox(g); curve_mid_y2_->setRange(-500, 500);
-        curve_mid_z2_ = new QSpinBox(g); curve_mid_z2_->setRange(-500, 500); curve_mid_z2_->setValue(50);
-        curve_mid_speed_ = new QSpinBox(g); curve_mid_speed_->setRange(10, 60); curve_mid_speed_->setValue(20);
-        curve_mid_id_ = new QSpinBox(g); curve_mid_id_->setRange(1, 8);
-        auto* curve_mid_btn = new QPushButton("Send curve ... mid", g);
-
-        jump_x_ = new QSpinBox(g); jump_x_->setRange(-500, 500);
-        jump_y_ = new QSpinBox(g); jump_y_->setRange(-500, 500);
-        jump_z_ = new QSpinBox(g); jump_z_->setRange(-500, 500); jump_z_->setValue(50);
-        jump_speed_ = new QSpinBox(g); jump_speed_->setRange(10, 100); jump_speed_->setValue(30);
-        jump_yaw_ = new QSpinBox(g); jump_yaw_->setRange(1, 360); jump_yaw_->setValue(90);
-        jump_mid1_ = new QSpinBox(g); jump_mid1_->setRange(1, 8);
-        jump_mid2_ = new QSpinBox(g); jump_mid2_->setRange(1, 8); jump_mid2_->setValue(2);
-        auto* jump_btn = new QPushButton("Send jump", g);
-
-        auto addFields = [l](int row, const QString& label, const QList<QWidget*>& widgets, QPushButton* btn) {
-            auto* r = new QHBoxLayout();
-            for (QWidget* w : widgets) {
-                r->addWidget(w);
-            }
-            auto* host = new QWidget();
-            host->setLayout(r);
-            l->addWidget(new QLabel(label), row, 0);
-            l->addWidget(host, row, 1);
-            l->addWidget(btn, row, 2);
-        };
-
-        addFields(0, "go x y z speed", {go_x_, go_y_, go_z_, go_speed_}, go_btn);
-        addFields(1, "go x y z speed mid", {go_mid_x_, go_mid_y_, go_mid_z_, go_mid_speed_, go_mid_id_}, go_mid_btn);
-        addFields(2, "curve x1 y1 z1 x2 y2 z2 speed", {curve_x1_, curve_y1_, curve_z1_, curve_x2_, curve_y2_, curve_z2_, curve_speed_}, curve_btn);
-        addFields(3, "curve ... speed mid", {curve_mid_x1_, curve_mid_y1_, curve_mid_z1_, curve_mid_x2_, curve_mid_y2_, curve_mid_z2_, curve_mid_speed_, curve_mid_id_}, curve_mid_btn);
-        addFields(4, "jump x y z speed yaw mid1 mid2", {jump_x_, jump_y_, jump_z_, jump_speed_, jump_yaw_, jump_mid1_, jump_mid2_}, jump_btn);
-
-        connect(go_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("go "
-                + std::to_string(go_x_->value()) + " "
-                + std::to_string(go_y_->value()) + " "
-                + std::to_string(go_z_->value()) + " "
-                + std::to_string(go_speed_->value()), "manual");
-        });
-        connect(go_mid_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("go "
-                + std::to_string(go_mid_x_->value()) + " "
-                + std::to_string(go_mid_y_->value()) + " "
-                + std::to_string(go_mid_z_->value()) + " "
-                + std::to_string(go_mid_speed_->value()) + " m" + std::to_string(go_mid_id_->value()), "manual");
-        });
-        connect(curve_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("curve "
-                + std::to_string(curve_x1_->value()) + " "
-                + std::to_string(curve_y1_->value()) + " "
-                + std::to_string(curve_z1_->value()) + " "
-                + std::to_string(curve_x2_->value()) + " "
-                + std::to_string(curve_y2_->value()) + " "
-                + std::to_string(curve_z2_->value()) + " "
-                + std::to_string(curve_speed_->value()), "manual");
-        });
-        connect(curve_mid_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("curve "
-                + std::to_string(curve_mid_x1_->value()) + " "
-                + std::to_string(curve_mid_y1_->value()) + " "
-                + std::to_string(curve_mid_z1_->value()) + " "
-                + std::to_string(curve_mid_x2_->value()) + " "
-                + std::to_string(curve_mid_y2_->value()) + " "
-                + std::to_string(curve_mid_z2_->value()) + " "
-                + std::to_string(curve_mid_speed_->value()) + " m" + std::to_string(curve_mid_id_->value()), "manual");
-        });
-        connect(jump_btn, &QPushButton::clicked, this, [this]() {
-            runCommandWithResponse("jump "
-                + std::to_string(jump_x_->value()) + " "
-                + std::to_string(jump_y_->value()) + " "
-                + std::to_string(jump_z_->value()) + " "
-                + std::to_string(jump_speed_->value()) + " "
-                + std::to_string(jump_yaw_->value()) + " m" + std::to_string(jump_mid1_->value())
-                + " m" + std::to_string(jump_mid2_->value()), "manual");
-        });
-
-        root->addWidget(g);
-    }
-
     void buildRawGroup(QVBoxLayout* root) {
         auto* g = new QGroupBox("Raw Command", this);
         auto* l = new QHBoxLayout(g);
@@ -530,38 +636,696 @@ private:
         root->addWidget(g);
     }
 
+    void buildStateHistoryGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("State History (Telemetry)", this);
+        auto* l = new QGridLayout(g);
+
+        state_buffer_capacity_spin_ = new QSpinBox(g);
+        state_buffer_capacity_spin_->setRange(50, 20000);
+        state_buffer_capacity_spin_->setValue(300);
+        auto* apply_capacity_btn = new QPushButton("Apply buffer", g);
+
+        state_metric_combo_ = new QComboBox(g);
+        state_metric_combo_->addItems({"pitch", "roll", "yaw", "vgx", "vgy", "vgz", "h", "tof", "battery", "baro", "agx", "agy", "agz"});
+
+        state_record_path_edit_ = new QLineEdit("state_recording.csv", g);
+        auto* browse_btn = new QPushButton("Browse...", g);
+        auto* start_rec_btn = new QPushButton("Start Recording", g);
+        auto* stop_rec_btn = new QPushButton("Stop Recording", g);
+        auto* clear_rec_btn = new QPushButton("Clear Recording", g);
+        auto* export_rec_btn = new QPushButton("Export CSV", g);
+
+        state_buffer_info_label_ = new QLabel("buffer=0", g);
+        state_record_info_label_ = new QLabel("recorded=0", g);
+
+        state_plot_widget_ = new StatePlotWidget(g);
+
+        l->addWidget(new QLabel("buffer size:"), 0, 0);
+        l->addWidget(state_buffer_capacity_spin_, 0, 1);
+        l->addWidget(apply_capacity_btn, 0, 2);
+        l->addWidget(new QLabel("metric:"), 0, 3);
+        l->addWidget(state_metric_combo_, 0, 4);
+
+        l->addWidget(start_rec_btn, 1, 0);
+        l->addWidget(stop_rec_btn, 1, 1);
+        l->addWidget(clear_rec_btn, 1, 2);
+        l->addWidget(export_rec_btn, 1, 3);
+        l->addWidget(state_record_info_label_, 1, 4);
+
+        l->addWidget(new QLabel("recording csv:"), 2, 0);
+        l->addWidget(state_record_path_edit_, 2, 1, 1, 3);
+        l->addWidget(browse_btn, 2, 4);
+
+        l->addWidget(state_plot_widget_, 3, 0, 1, 5);
+        l->addWidget(state_buffer_info_label_, 4, 0, 1, 5);
+
+        connect(apply_capacity_btn, &QPushButton::clicked, this, [this]() {
+            state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
+            appendLog(QString("state buffer size set to %1").arg(state_buffer_capacity_spin_->value()));
+        });
+
+        connect(start_rec_btn, &QPushButton::clicked, this, [this]() {
+            state_receiver_.startStateRecording();
+            appendLog("state recording started");
+        });
+
+        connect(stop_rec_btn, &QPushButton::clicked, this, [this]() {
+            state_receiver_.stopStateRecording();
+            appendLog("state recording stopped");
+        });
+
+        connect(clear_rec_btn, &QPushButton::clicked, this, [this]() {
+            state_receiver_.clearRecordedStateSamples();
+            appendLog("state recording cleared");
+        });
+
+        connect(export_rec_btn, &QPushButton::clicked, this, [this]() {
+            const QString path = state_record_path_edit_->text().trimmed();
+            if (path.isEmpty()) {
+                appendLog("state csv path is empty");
+                return;
+            }
+            const auto rc = state_receiver_.exportRecordedStateCsv(path.toStdString());
+            appendLog(QString("state csv export => %1 (%2)")
+                          .arg(QString::fromStdString(responseCodeToString(rc)))
+                          .arg(path));
+        });
+
+        connect(browse_btn, &QPushButton::clicked, this, [this]() {
+            const QString picked = QFileDialog::getSaveFileName(
+                this,
+                "Export State CSV",
+                state_record_path_edit_->text().trimmed(),
+                "CSV (*.csv);;All files (*)");
+            if (!picked.isEmpty()) {
+                state_record_path_edit_->setText(picked);
+            }
+        });
+
+        root->addWidget(g);
+    }
+
+    void buildVisionGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("Vision", this);
+        auto* outer = new QHBoxLayout(g);
+
+        auto* left = new QVBoxLayout();
+        vision_frame_label_ = new QLabel("Vision not started", g);
+        vision_frame_label_->setMinimumSize(560, 315);
+        vision_frame_label_->setAlignment(Qt::AlignCenter);
+        vision_frame_label_->setStyleSheet("QLabel { background-color: #111; color: #ddd; border: 1px solid #333; }");
+        left->addWidget(vision_frame_label_);
+        outer->addLayout(left, 2);
+
+        auto* right_host = new QWidget(g);
+        auto* right = new QVBoxLayout(right_host);
+        vision_status_label_ = new QLabel("status: idle", right_host);
+        vision_rx_label_ = new QLabel("rx packets: 0", right_host);
+        vision_nal_label_ = new QLabel("nal units: 0", right_host);
+        vision_fps_label_ = new QLabel("decode fps: 0.00", right_host);
+        vision_size_label_ = new QLabel("size: 0x0", right_host);
+        vision_decode_err_label_ = new QLabel("decode errors: 0", right_host);
+        vision_frame_info_label_ = new QLabel("frames: 0 | keyframes: 0", right_host);
+
+        right->addWidget(vision_status_label_);
+        right->addWidget(vision_rx_label_);
+        right->addWidget(vision_nal_label_);
+        right->addWidget(vision_fps_label_);
+        right->addWidget(vision_size_label_);
+        right->addWidget(vision_decode_err_label_);
+        right->addWidget(vision_frame_info_label_);
+
+        vision_start_btn_ = new QPushButton("Start View", right_host);
+        vision_stop_btn_ = new QPushButton("Stop View", right_host);
+        vision_pause_btn_ = new QPushButton("Pause", right_host);
+        vision_snapshot_btn_ = new QPushButton("Snapshot", right_host);
+        vision_overlay_btn_ = new QPushButton("Overlay: ON", right_host);
+
+        right->addWidget(vision_start_btn_);
+        right->addWidget(vision_stop_btn_);
+        right->addWidget(vision_pause_btn_);
+        right->addWidget(vision_snapshot_btn_);
+        right->addWidget(vision_overlay_btn_);
+        right->addStretch(1);
+
+        connect(vision_start_btn_, &QPushButton::clicked, this, [this]() {
+            (void)startVisionWithStreamOn();
+        });
+        connect(vision_stop_btn_, &QPushButton::clicked, this, [this]() {
+            stopVisionWithStreamOff();
+        });
+        connect(vision_pause_btn_, &QPushButton::clicked, this, [this]() {
+            toggleVisionPause();
+        });
+        connect(vision_overlay_btn_, &QPushButton::clicked, this, [this]() {
+            vision_overlay_enabled_ = !vision_overlay_enabled_;
+            if (vision_overlay_btn_ != nullptr) {
+                vision_overlay_btn_->setText(vision_overlay_enabled_ ? "Overlay: ON" : "Overlay: OFF");
+            }
+            appendLog(QString("vision overlay => %1").arg(vision_overlay_enabled_ ? "ON" : "OFF"));
+        });
+        connect(vision_snapshot_btn_, &QPushButton::clicked, this, [this]() {
+            saveVisionSnapshot();
+        });
+
+#ifndef TELLO_HAS_FFMPEG
+        vision_start_btn_->setEnabled(false);
+        vision_stop_btn_->setEnabled(false);
+        vision_pause_btn_->setEnabled(false);
+        vision_snapshot_btn_->setEnabled(false);
+        vision_overlay_btn_->setEnabled(false);
+        vision_status_label_->setText("status: FFmpeg backend not available");
+        vision_frame_label_->setText("FFmpeg backend not available. Reconfigure with TELLO_ENABLE_FFMPEG=ON.");
+#endif
+
+        outer->addWidget(right_host, 1);
+        root->addWidget(g);
+    }
+
+    void refreshStateHistoryView() {
+        if (state_receiver_.isRunning()) {
+            const auto buffered = state_receiver_.getBufferedStateSamples();
+            const auto recorded = state_receiver_.getRecordedStateSamples();
+            const auto rc_recorded = state_receiver_.getRecordedRcCommandSamples();
+            const auto metric = state_metric_combo_ != nullptr ? state_metric_combo_->currentText() : QString("pitch");
+
+            if (state_receiver_.hasReceivedState() && battery_status_label_ != nullptr) {
+                const auto latest = state_receiver_.getLatestState();
+                battery_status_label_->setText(QString("battery: %1%").arg(latest.bat));
+            }
+
+            if (state_plot_widget_ != nullptr) {
+                state_plot_widget_->setSamples(buffered, metric);
+            }
+
+            if (state_buffer_info_label_ != nullptr) {
+                state_buffer_info_label_->setText(
+                    QString("buffer=%1 / cap=%2")
+                        .arg(static_cast<int>(buffered.size()))
+                        .arg(state_receiver_.getStateBufferCapacity()));
+            }
+
+            if (state_record_info_label_ != nullptr) {
+                state_record_info_label_->setText(
+                    QString("recorded=%1 | rc=%2 | %3")
+                        .arg(static_cast<int>(recorded.size()))
+                        .arg(static_cast<int>(rc_recorded.size()))
+                        .arg(state_receiver_.isStateRecording() ? "REC ON" : "REC OFF"));
+            }
+        } else {
+            if (state_buffer_info_label_ != nullptr) {
+                state_buffer_info_label_->setText("state receiver offline");
+            }
+            if (state_record_info_label_ != nullptr) {
+                state_record_info_label_->setText(
+                    state_receiver_.isStateRecording() ? "recording pending (receiver offline)" : "recorded=0");
+            }
+        }
+    }
+
+    void refreshVisionView() {
+#ifdef TELLO_HAS_FFMPEG
+        if (vision_status_label_ != nullptr) {
+            vision_status_label_->setText(
+                QString("status: %1 | %2")
+                    .arg(vision_pipeline_running_ ? "running" : "idle")
+                    .arg(vision_paused_ ? "PAUSED" : "LIVE"));
+        }
+
+        if (vision_pipeline_running_) {
+            const auto rx_stats = video_receiver_.getVideoStats();
+            const auto nal_stats = video_assembler_.getStats();
+            const auto dec_stats = video_decoder_.getStats();
+
+            if (vision_rx_label_ != nullptr) {
+                vision_rx_label_->setText(QString("rx packets: %1 (ema=%2 pps)")
+                                              .arg(static_cast<qulonglong>(rx_stats.packets_total))
+                                              .arg(rx_stats.rx_pps_ema, 0, 'f', 1));
+            }
+            if (vision_nal_label_ != nullptr) {
+                vision_nal_label_->setText(QString("nal units: %1")
+                                               .arg(static_cast<qulonglong>(nal_stats.nal_units_out)));
+            }
+            if (vision_fps_label_ != nullptr) {
+                vision_fps_label_->setText(QString("decode fps: %1")
+                                               .arg(dec_stats.decode_fps_ema, 0, 'f', 2));
+            }
+            if (vision_size_label_ != nullptr) {
+                vision_size_label_->setText(QString("size: %1x%2")
+                                                .arg(vision_frame_width_.load())
+                                                .arg(vision_frame_height_.load()));
+            }
+            if (vision_decode_err_label_ != nullptr) {
+                vision_decode_err_label_->setText(QString("decode errors: %1")
+                                                      .arg(static_cast<qulonglong>(dec_stats.decode_errors)));
+            }
+            if (vision_frame_info_label_ != nullptr) {
+                vision_frame_info_label_->setText(
+                    QString("frames: %1 | keyframes: %2")
+                        .arg(static_cast<qulonglong>(dec_stats.frames_decoded))
+                        .arg(static_cast<qulonglong>(vision_keyframes_.load())));
+            }
+        }
+
+        QImage frame_to_show;
+        {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            frame_to_show = vision_paused_ ? vision_paused_frame_ : vision_latest_frame_;
+        }
+
+        if (frame_to_show.isNull()) {
+            if (vision_frame_label_ != nullptr && !vision_pipeline_running_) {
+                vision_frame_label_->setText("Vision not started");
+            }
+            return;
+        }
+
+        QImage composed = frame_to_show.copy();
+        if (vision_overlay_enabled_) {
+            const auto dec_stats = video_decoder_.getStats();
+            const auto rx_stats = video_receiver_.getVideoStats();
+            const auto nal_stats = video_assembler_.getStats();
+
+            QPainter p(&composed);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(0, 255, 110), 1));
+            p.drawText(10, 22, QString("fps=%1 frames=%2 keyframes=%3")
+                                .arg(dec_stats.decode_fps_ema, 0, 'f', 2)
+                                .arg(static_cast<qulonglong>(dec_stats.frames_decoded))
+                                .arg(static_cast<qulonglong>(vision_keyframes_.load())));
+            p.drawText(10, 42, QString("packets=%1 nal=%2 dec_errors=%3")
+                                .arg(static_cast<qulonglong>(rx_stats.packets_total))
+                                .arg(static_cast<qulonglong>(nal_stats.nal_units_out))
+                                .arg(static_cast<qulonglong>(dec_stats.decode_errors)));
+            p.drawText(10, 62, QString("state=%1 controls: Pause, Snapshot, Overlay")
+                                .arg(vision_paused_ ? "PAUSED" : "LIVE"));
+        }
+
+        if (vision_frame_label_ != nullptr) {
+            vision_frame_label_->setPixmap(QPixmap::fromImage(composed).scaled(
+                vision_frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+#else
+        if (vision_status_label_ != nullptr) {
+            vision_status_label_->setText("status: FFmpeg backend not available");
+        }
+#endif
+    }
+
+#ifdef TELLO_HAS_FFMPEG
+    bool startVisionWithStreamOn() {
+        if (!ensureSdkReady()) {
+            return false;
+        }
+
+        std::string response;
+        const auto rc = client_.sendCommandWithResponse("streamon", response);
+        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+        const QString response_q = QString::fromStdString(response);
+        const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
+
+        QString line = "streamon (vision) => " + rc_q;
+        if (!response.empty()) {
+            line += " | response=\"" + response_q + "\"";
+        }
+        line += " | state=" + state_q;
+        appendLog(line);
+        writeCsvRow("vision", "streamon", rc_q, response_q, state_q);
+
+        return startVisionPipeline();
+    }
+
+    void stopVisionWithStreamOff() {
+        stopVisionPipeline();
+
+        if (!sdk_ready_) {
+            return;
+        }
+
+        std::string response;
+        const auto rc = client_.sendCommandWithResponse("streamoff", response);
+        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+        const QString response_q = QString::fromStdString(response);
+        const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
+
+        QString line = "streamoff (vision) => " + rc_q;
+        if (!response.empty()) {
+            line += " | response=\"" + response_q + "\"";
+        }
+        line += " | state=" + state_q;
+        appendLog(line);
+        writeCsvRow("vision", "streamoff", rc_q, response_q, state_q);
+    }
+
+    bool startVisionPipeline() {
+        if (vision_pipeline_running_) {
+            return true;
+        }
+        if (!ensureSdkReady()) {
+            return false;
+        }
+
+        video_assembler_.reset();
+        video_decoder_seen_sps_.store(false);
+        video_decoder_seen_pps_.store(false);
+        video_decoder_synced_.store(false);
+        vision_keyframes_.store(0);
+        vision_frame_width_.store(0);
+        vision_frame_height_.store(0);
+
+        if (!video_decoder_.initialize()) {
+            appendLog("vision start failed: decoder initialize error");
+            return false;
+        }
+        video_decoder_.resetStats();
+
+        video_decoder_.setFrameCallback([this](const tello::VideoDecoderFfmpeg::DecodedFrameInfo& frame_info) {
+            if (frame_info.is_key_frame) {
+                vision_keyframes_.fetch_add(1);
+            }
+            vision_frame_width_.store(frame_info.width);
+            vision_frame_height_.store(frame_info.height);
+        });
+
+        video_decoder_.setFrameDataCallback([this](const tello::VideoDecoderFfmpeg::DecodedFrame& frame) {
+            if (frame.bgr.empty() || frame.info.width <= 0 || frame.info.height <= 0 || frame.bgr_stride <= 0) {
+                return;
+            }
+
+            QImage rgb(frame.info.width, frame.info.height, QImage::Format_RGB888);
+            for (int y = 0; y < frame.info.height; ++y) {
+                const uint8_t* src = frame.bgr.data() + (static_cast<size_t>(y) * static_cast<size_t>(frame.bgr_stride));
+                uint8_t* dst = rgb.scanLine(y);
+                for (int x = 0; x < frame.info.width; ++x) {
+                    const uint8_t b = src[x * 3 + 0];
+                    const uint8_t g = src[x * 3 + 1];
+                    const uint8_t r = src[x * 3 + 2];
+                    dst[x * 3 + 0] = r;
+                    dst[x * 3 + 1] = g;
+                    dst[x * 3 + 2] = b;
+                }
+            }
+
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            vision_latest_frame_ = rgb;
+            if (!vision_paused_) {
+                vision_paused_frame_ = rgb;
+            }
+        });
+
+        video_assembler_.setNalCallback([this](const std::vector<uint8_t>& nal) {
+            if (nal.empty()) {
+                return;
+            }
+
+            const uint8_t nal_type = static_cast<uint8_t>(nal[0] & 0x1F);
+            if (nal_type == 7) {
+                video_decoder_seen_sps_.store(true);
+            } else if (nal_type == 8) {
+                video_decoder_seen_pps_.store(true);
+            } else if (nal_type == 5 && video_decoder_seen_sps_.load() && video_decoder_seen_pps_.load()) {
+                video_decoder_synced_.store(true);
+            }
+
+            const bool allow_decode = (nal_type == 7 || nal_type == 8 || nal_type == 5 || video_decoder_synced_.load());
+            if (allow_decode) {
+                (void)video_decoder_.decodeNal(nal);
+            }
+        });
+
+        video_receiver_.setPacketCallback([this](const std::vector<uint8_t>& packet) {
+            video_assembler_.pushPacket(packet);
+        });
+
+        const auto recv_rc = video_receiver_.start("0.0.0.0", 11111, 500);
+        if (recv_rc != tello::ResponseCode::OK) {
+            appendLog("vision start failed: video receiver start error");
+            video_decoder_.shutdown();
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            vision_latest_frame_ = QImage();
+            vision_paused_frame_ = QImage();
+        }
+        vision_paused_ = false;
+        if (vision_pause_btn_ != nullptr) {
+            vision_pause_btn_->setText("Pause");
+        }
+
+        vision_pipeline_running_ = true;
+        appendLog("vision pipeline started (ensure streamon is active)");
+        return true;
+    }
+
+    void stopVisionPipeline() {
+        if (!vision_pipeline_running_) {
+            return;
+        }
+
+        vision_pipeline_running_ = false;
+        video_receiver_.stop();
+        video_decoder_.shutdown();
+
+        {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            vision_latest_frame_ = QImage();
+            vision_paused_frame_ = QImage();
+        }
+        if (vision_frame_label_ != nullptr) {
+            vision_frame_label_->setPixmap(QPixmap());
+            vision_frame_label_->setText("Vision stopped");
+        }
+        appendLog("vision pipeline stopped");
+    }
+
+    void toggleVisionPause() {
+        if (!vision_pipeline_running_) {
+            appendLog("vision pause ignored: pipeline not running");
+            return;
+        }
+
+        vision_paused_ = !vision_paused_;
+        if (vision_paused_) {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            vision_paused_frame_ = vision_latest_frame_;
+        }
+        if (vision_pause_btn_ != nullptr) {
+            vision_pause_btn_->setText(vision_paused_ ? "Resume" : "Pause");
+        }
+        appendLog(QString("vision %1").arg(vision_paused_ ? "paused" : "resumed"));
+    }
+
+    void saveVisionSnapshot() {
+        QImage snapshot;
+        {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            snapshot = vision_paused_ ? vision_paused_frame_ : vision_latest_frame_;
+        }
+
+        if (snapshot.isNull()) {
+            appendLog("snapshot skipped: no frame available");
+            return;
+        }
+
+        const QString file = "vision_snapshot_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz") + ".png";
+        if (snapshot.save(file)) {
+            appendLog("snapshot saved => " + file);
+        } else {
+            appendLog("snapshot save failed => " + file);
+        }
+    }
+#else
+    bool startVisionWithStreamOn() {
+        appendLog("vision not available: FFmpeg backend disabled");
+        return false;
+    }
+
+    void stopVisionWithStreamOff() {
+        appendLog("vision not available: FFmpeg backend disabled");
+    }
+
+    bool startVisionPipeline() {
+        appendLog("vision not available: FFmpeg backend disabled");
+        return false;
+    }
+
+    void stopVisionPipeline() {}
+
+    void toggleVisionPause() {
+        appendLog("vision not available: FFmpeg backend disabled");
+    }
+
+    void saveVisionSnapshot() {
+        appendLog("vision not available: FFmpeg backend disabled");
+    }
+#endif
+
     void appendLog(const QString& msg) {
         log_view_->append("[" + nowClockString() + "] " + msg);
+    }
+
+    std::string buildRcCommandFromInputs() const {
+        return "rc "
+            + std::to_string(rc_lr_slider_ != nullptr ? rc_lr_slider_->value() : 0) + " "
+            + std::to_string(rc_fb_slider_ != nullptr ? rc_fb_slider_->value() : 0) + " "
+            + std::to_string(rc_ud_slider_ != nullptr ? rc_ud_slider_->value() : 0) + " "
+            + std::to_string(rc_yaw_slider_ != nullptr ? rc_yaw_slider_->value() : 0);
+    }
+
+    bool parseRcCommand(const std::string& cmd, int& a, int& b, int& c, int& d) const {
+        std::istringstream iss(cmd);
+        std::string head;
+        if (!(iss >> head) || head != "rc") {
+            return false;
+        }
+        if (!(iss >> a >> b >> c >> d)) {
+            return false;
+        }
+        return true;
+    }
+
+    void setRcSliders(int lr, int fb, int ud, int yaw) {
+        if (rc_lr_slider_ != nullptr) {
+            rc_lr_slider_->setValue(lr);
+        }
+        if (rc_fb_slider_ != nullptr) {
+            rc_fb_slider_->setValue(fb);
+        }
+        if (rc_ud_slider_ != nullptr) {
+            rc_ud_slider_->setValue(ud);
+        }
+        if (rc_yaw_slider_ != nullptr) {
+            rc_yaw_slider_->setValue(yaw);
+        }
+    }
+
+    void sendRcNeutralBestEffort(const QString& reason) {
+        if (!sdk_ready_) {
+            return;
+        }
+
+        std::string response;
+        const auto rc = client_.sendCommandWithResponse("rc 0 0 0 0", response);
+        state_receiver_.recordRcCommandSample(0, 0, 0, 0, ("rc-neutral-" + reason).toStdString(), rc);
+        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+        if (rc == tello::ResponseCode::OK) {
+            appendLog("rc stream neutralized (" + reason + ") => " + rc_q);
+        } else {
+            appendLog("rc stream neutralize failed (" + reason + ") => " + rc_q);
+        }
+    }
+
+    void setRcStreamingEnabled(bool enabled, const QString& reason) {
+        if (enabled) {
+            if (rc_stream_timer_ != nullptr) {
+                rc_stream_timer_->start(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50);
+            }
+            appendLog(QString("continuous RC ON (%1 ms)").arg(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50));
+            return;
+        }
+
+        if (rc_stream_timer_ != nullptr) {
+            rc_stream_timer_->stop();
+        }
+        sendRcNeutralBestEffort(reason);
+    }
+
+    void sendRcStreamTick() {
+        if (!sdk_ready_ || rc_stream_check_ == nullptr || !rc_stream_check_->isChecked()) {
+            return;
+        }
+
+        std::string response;
+        const std::string cmd = buildRcCommandFromInputs();
+        const auto rc = client_.sendCommandWithResponse(cmd, response);
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        int d = 0;
+        if (parseRcCommand(cmd, a, b, c, d)) {
+            state_receiver_.recordRcCommandSample(a, b, c, d, "rc-stream", rc);
+        }
+        if (rc != tello::ResponseCode::OK) {
+            appendLog("rc stream tick => " + QString::fromStdString(responseCodeToString(rc)));
+        }
     }
 
     void updateStatusLabel() {
         status_label_->setText(
             "State: " + QString::fromStdString(connectionStateToString(client_.getConnectionState()))
             + " | SDK: " + QString(sdk_ready_ ? "READY" : "NOT_READY")
+            + " | RC_STREAM=" + QString((rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) ? "ON" : "OFF")
             + " | speed_setpoint=" + QString::number(speed_spin_ != nullptr ? speed_spin_->value() : 0));
     }
 
     bool connectSdk() {
-        if (!client_.isInitialized()) {
+        // Recovery-friendly connect flow: always refresh command channel state.
+        // This is important after drone power-cycle while the app stays open.
+        constexpr int kConnectAttempts = 6;
+        constexpr int kSdkProbesPerAttempt = 3;
+        constexpr int kRebindPauseMs = 350;
+        constexpr int kSdkProbeGapMs = 500;
+        constexpr int kPostInitSettleMs = 900;
+
+        for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
+            client_.shutdown();
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRebindPauseMs));
+
             const auto init_rc = client_.initialize("192.168.10.1", 8889, 9000);
-            appendLog("initialize: " + QString::fromStdString(responseCodeToString(init_rc)));
+            appendLog("initialize(attempt=" + QString::number(attempt) + "): "
+                      + QString::fromStdString(responseCodeToString(init_rc)));
             if (init_rc != tello::ResponseCode::OK) {
-                sdk_ready_ = false;
-                updateStatusLabel();
-                return false;
+                const int backoff_ms = 600 + attempt * 400;
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                continue;
             }
+
+            // After power-cycle, the drone can accept Wi-Fi but still be finishing SDK stack startup.
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPostInitSettleMs));
+
+            for (int probe = 1; probe <= kSdkProbesPerAttempt; ++probe) {
+                const auto sdk_rc = client_.enterSdkMode();
+                appendLog("command (enterSdkMode, attempt=" + QString::number(attempt)
+                          + ", probe=" + QString::number(probe) + "): "
+                          + QString::fromStdString(responseCodeToString(sdk_rc)));
+                if (sdk_rc == tello::ResponseCode::OK) {
+                    if (!state_receiver_.isRunning()) {
+                        const auto state_rc = state_receiver_.start("0.0.0.0", 8890, 1000);
+                        appendLog("state receiver start => " + QString::fromStdString(responseCodeToString(state_rc)));
+                        state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
+                    }
+                    sdk_ready_ = true;
+                    updateStatusLabel();
+                    return true;
+                }
+
+                if (probe < kSdkProbesPerAttempt) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kSdkProbeGapMs));
+                }
+            }
+
+            const int backoff_ms = 1000 + attempt * 500;
+            std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
         }
 
-        const auto sdk_rc = client_.enterSdkMode();
-        appendLog("command (enterSdkMode): " + QString::fromStdString(responseCodeToString(sdk_rc)));
-        sdk_ready_ = (sdk_rc == tello::ResponseCode::OK);
+        sdk_ready_ = false;
+        appendLog("Connect + SDK failed after retries. If the drone was just powered on, wait 10-15s and try again.");
         updateStatusLabel();
-        return sdk_ready_;
+        return false;
     }
 
     void disconnectSdk() {
         auto_refresh_timer_->stop();
         auto_refresh_check_->setChecked(false);
+        if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
+            QSignalBlocker blocker(rc_stream_check_);
+            rc_stream_check_->setChecked(false);
+        }
+        setRcStreamingEnabled(false, "disconnect");
+        stopVisionPipeline();
+        state_receiver_.stop();
         client_.shutdown();
         sdk_ready_ = false;
         appendLog("disconnected");
@@ -637,6 +1401,15 @@ private:
 
         std::string response;
         const auto rc = client_.sendCommandWithResponse(cmd, response);
+
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        int d = 0;
+        if (parseRcCommand(cmd, a, b, c, d)) {
+            state_receiver_.recordRcCommandSample(a, b, c, d, source.toStdString(), rc);
+        }
+
         const QString rc_q = QString::fromStdString(responseCodeToString(rc));
         const QString response_q = QString::fromStdString(response);
         const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
@@ -671,26 +1444,73 @@ private:
 
     QLabel* status_label_ = nullptr;
     QLabel* wifi_quality_label_ = nullptr;
+    QLabel* battery_status_label_ = nullptr;
     QTextEdit* log_view_ = nullptr;
 
     QCheckBox* auto_refresh_check_ = nullptr;
     QSpinBox* auto_refresh_interval_ms_ = nullptr;
     QTimer* auto_refresh_timer_ = nullptr;
+    QCheckBox* rc_stream_check_ = nullptr;
+    QSpinBox* rc_stream_interval_ms_ = nullptr;
+    QTimer* rc_stream_timer_ = nullptr;
+    QTimer* state_view_timer_ = nullptr;
+    QTimer* vision_view_timer_ = nullptr;
+    QComboBox* panel_selector_ = nullptr;
+    QStackedWidget* panel_stack_ = nullptr;
+
+    tello::StateReceiver state_receiver_;
+    QSpinBox* state_buffer_capacity_spin_ = nullptr;
+    QComboBox* state_metric_combo_ = nullptr;
+    QLineEdit* state_record_path_edit_ = nullptr;
+    QLabel* state_buffer_info_label_ = nullptr;
+    QLabel* state_record_info_label_ = nullptr;
+    StatePlotWidget* state_plot_widget_ = nullptr;
+
+    QLabel* vision_frame_label_ = nullptr;
+    QLabel* vision_status_label_ = nullptr;
+    QLabel* vision_rx_label_ = nullptr;
+    QLabel* vision_nal_label_ = nullptr;
+    QLabel* vision_fps_label_ = nullptr;
+    QLabel* vision_size_label_ = nullptr;
+    QLabel* vision_decode_err_label_ = nullptr;
+    QLabel* vision_frame_info_label_ = nullptr;
+    QPushButton* vision_start_btn_ = nullptr;
+    QPushButton* vision_stop_btn_ = nullptr;
+    QPushButton* vision_pause_btn_ = nullptr;
+    QPushButton* vision_snapshot_btn_ = nullptr;
+    QPushButton* vision_overlay_btn_ = nullptr;
+
+#ifdef TELLO_HAS_FFMPEG
+    tello::VideoReceiver video_receiver_;
+    tello::VideoStreamAssembler video_assembler_;
+    tello::VideoDecoderFfmpeg video_decoder_;
+    std::mutex vision_frame_mutex_;
+    QImage vision_latest_frame_;
+    QImage vision_paused_frame_;
+    std::atomic<uint64_t> vision_keyframes_{0};
+    std::atomic<int32_t> vision_frame_width_{0};
+    std::atomic<int32_t> vision_frame_height_{0};
+    std::atomic<bool> video_decoder_seen_sps_{false};
+    std::atomic<bool> video_decoder_seen_pps_{false};
+    std::atomic<bool> video_decoder_synced_{false};
+#endif
+    bool vision_pipeline_running_ = false;
+    bool vision_paused_ = false;
+    bool vision_overlay_enabled_ = true;
 
     QCheckBox* csv_enabled_ = nullptr;
     QLineEdit* csv_path_edit_ = nullptr;
     std::ofstream csv_file_;
 
     QSpinBox* speed_spin_ = nullptr;
-    QSpinBox* rc_a_ = nullptr;
-    QSpinBox* rc_b_ = nullptr;
-    QSpinBox* rc_c_ = nullptr;
-    QSpinBox* rc_d_ = nullptr;
-    QLineEdit* wifi_ssid_ = nullptr;
-    QLineEdit* wifi_pass_ = nullptr;
-    QLineEdit* ap_ssid_ = nullptr;
-    QLineEdit* ap_pass_ = nullptr;
-    QSpinBox* mdirection_spin_ = nullptr;
+    QSlider* rc_lr_slider_ = nullptr;
+    QSlider* rc_fb_slider_ = nullptr;
+    QSlider* rc_ud_slider_ = nullptr;
+    QSlider* rc_yaw_slider_ = nullptr;
+    QLabel* rc_lr_value_ = nullptr;
+    QLabel* rc_fb_value_ = nullptr;
+    QLabel* rc_ud_value_ = nullptr;
+    QLabel* rc_yaw_value_ = nullptr;
 
     QSpinBox* up_cm_ = nullptr;
     QSpinBox* down_cm_ = nullptr;
@@ -702,50 +1522,45 @@ private:
     QSpinBox* ccw_deg_ = nullptr;
     QLineEdit* flip_dir_ = nullptr;
 
-    QSpinBox* go_x_ = nullptr;
-    QSpinBox* go_y_ = nullptr;
-    QSpinBox* go_z_ = nullptr;
-    QSpinBox* go_speed_ = nullptr;
-
-    QSpinBox* go_mid_x_ = nullptr;
-    QSpinBox* go_mid_y_ = nullptr;
-    QSpinBox* go_mid_z_ = nullptr;
-    QSpinBox* go_mid_speed_ = nullptr;
-    QSpinBox* go_mid_id_ = nullptr;
-
-    QSpinBox* curve_x1_ = nullptr;
-    QSpinBox* curve_y1_ = nullptr;
-    QSpinBox* curve_z1_ = nullptr;
-    QSpinBox* curve_x2_ = nullptr;
-    QSpinBox* curve_y2_ = nullptr;
-    QSpinBox* curve_z2_ = nullptr;
-    QSpinBox* curve_speed_ = nullptr;
-
-    QSpinBox* curve_mid_x1_ = nullptr;
-    QSpinBox* curve_mid_y1_ = nullptr;
-    QSpinBox* curve_mid_z1_ = nullptr;
-    QSpinBox* curve_mid_x2_ = nullptr;
-    QSpinBox* curve_mid_y2_ = nullptr;
-    QSpinBox* curve_mid_z2_ = nullptr;
-    QSpinBox* curve_mid_speed_ = nullptr;
-    QSpinBox* curve_mid_id_ = nullptr;
-
-    QSpinBox* jump_x_ = nullptr;
-    QSpinBox* jump_y_ = nullptr;
-    QSpinBox* jump_z_ = nullptr;
-    QSpinBox* jump_speed_ = nullptr;
-    QSpinBox* jump_yaw_ = nullptr;
-    QSpinBox* jump_mid1_ = nullptr;
-    QSpinBox* jump_mid2_ = nullptr;
-
     QLineEdit* raw_command_edit_ = nullptr;
 };
 
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // WSLg can expose both Wayland and X11 paths. In some setups, Wayland+EGL
+    // fails to initialize and results in no visible window. Prefer a stable
+    // QWidget path with software rendering unless user explicitly overrides.
+    const bool is_wsl = !qEnvironmentVariableIsEmpty("WSL_DISTRO_NAME");
+    if (is_wsl) {
+        if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+            qputenv("QT_QPA_PLATFORM", QByteArray("xcb"));
+        }
+        if (qEnvironmentVariableIsEmpty("QT_OPENGL")) {
+            qputenv("QT_OPENGL", QByteArray("software"));
+        }
+        if (qEnvironmentVariableIsEmpty("QT_XCB_GL_INTEGRATION")) {
+            qputenv("QT_XCB_GL_INTEGRATION", QByteArray("none"));
+        }
+        if (qEnvironmentVariableIsEmpty("LIBGL_ALWAYS_SOFTWARE")) {
+            qputenv("LIBGL_ALWAYS_SOFTWARE", QByteArray("1"));
+        }
+    }
+
+    QApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
     QApplication app(argc, argv);
+
+    std::cerr << "[tello_control_panel] QT_QPA_PLATFORM="
+              << qgetenv("QT_QPA_PLATFORM").constData()
+              << " QT_OPENGL=" << qgetenv("QT_OPENGL").constData()
+              << " QT_XCB_GL_INTEGRATION=" << qgetenv("QT_XCB_GL_INTEGRATION").constData()
+              << " LIBGL_ALWAYS_SOFTWARE=" << qgetenv("LIBGL_ALWAYS_SOFTWARE").constData()
+              << std::endl;
+
     ControlPanelWidget panel;
     panel.show();
+    panel.showNormal();
+    panel.raise();
+    panel.activateWindow();
     return app.exec();
 }

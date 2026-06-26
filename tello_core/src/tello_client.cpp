@@ -259,6 +259,7 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
     }
 
     const bool is_sdk_command = (command == "command");
+    const bool expects_query_payload = !command.empty() && command.back() == '?';
     if (!is_sdk_command) {
         const ResponseCode sdk_rc = ensureSdkMode();
         if (sdk_rc != ResponseCode::OK) {
@@ -288,6 +289,13 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
         if (is_sdk_command) {
             sdk_mode_confirmed_ = true;
         }
+        return rc;
+    }
+
+    // Some control-path "error" replies are stale/ambiguous on UDP and may
+    // still correspond to a successfully executed action. Do not immediately
+    // force RECOVERING for non-query control commands.
+    if (rc == ResponseCode::ERROR && !expects_query_payload && !is_sdk_command) {
         return rc;
     }
 
@@ -323,6 +331,9 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
         return ResponseCode::ERROR;
     }
 
+    const bool is_sdk_command = (command == "command");
+    const bool expects_query_payload = !command.empty() && command.back() == '?';
+
     const ResponseCode sdk_rc = ensureSdkMode();
     if (sdk_rc != ResponseCode::OK) {
         if (consecutive_failures_ >= reliability_config_.recovery_threshold) {
@@ -346,6 +357,12 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
     ResponseCode rc = command_executor_->executeCommandWithResponse(command, response);
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
+        return rc;
+    }
+
+    // Keep channel state stable on ambiguous control-command "error" replies,
+    // so a following safety command (for example, land) is not penalized.
+    if (rc == ResponseCode::ERROR && !expects_query_payload && !is_sdk_command) {
         return rc;
     }
 

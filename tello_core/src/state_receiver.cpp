@@ -1,10 +1,30 @@
 #include "tello/state_receiver.hpp"
 
 #include <chrono>
+#include <fstream>
 #include <thread>
 #include <vector>
 
 namespace tello {
+
+namespace {
+
+const char* responseCodeToString(ResponseCode rc) {
+    switch (rc) {
+        case ResponseCode::OK:
+            return "OK";
+        case ResponseCode::ERROR:
+            return "ERROR";
+        case ResponseCode::TIMEOUT:
+            return "TIMEOUT";
+        case ResponseCode::PARSE_ERROR:
+            return "PARSE_ERROR";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+} // namespace
 
 StateReceiver::StateReceiver()
     : socket_(nullptr),
@@ -18,6 +38,15 @@ StateReceiver::StateReceiver()
     stats_(),
     last_packet_tp_(),
     has_last_packet_tp_(false),
+            history_mutex_(),
+            state_buffer_capacity_(300),
+            state_buffer_(),
+            recorded_samples_(),
+            recorded_rc_samples_(),
+            recording_enabled_(false),
+            recording_start_timestamp_ms_(-1),
+            next_state_sequence_(0),
+            next_rc_sequence_(0),
       last_error_("") {}
 
 StateReceiver::~StateReceiver() {
@@ -104,6 +133,173 @@ void StateReceiver::resetTelemetryStats() {
     has_last_packet_tp_ = false;
 }
 
+void StateReceiver::setStateBufferCapacity(size_t capacity) {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    state_buffer_capacity_ = capacity;
+
+    while (state_buffer_.size() > state_buffer_capacity_) {
+        state_buffer_.pop_front();
+    }
+}
+
+size_t StateReceiver::getStateBufferCapacity() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return state_buffer_capacity_;
+}
+
+std::vector<StateReceiver::StateSample> StateReceiver::getBufferedStateSamples() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return std::vector<StateSample>(state_buffer_.begin(), state_buffer_.end());
+}
+
+void StateReceiver::clearBufferedStateSamples() {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    state_buffer_.clear();
+}
+
+void StateReceiver::startStateRecording() {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    recording_enabled_ = true;
+    recording_start_timestamp_ms_ = -1;
+    recorded_samples_.clear();
+    recorded_rc_samples_.clear();
+}
+
+void StateReceiver::stopStateRecording() {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    recording_enabled_ = false;
+}
+
+bool StateReceiver::isStateRecording() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return recording_enabled_;
+}
+
+std::vector<StateReceiver::StateSample> StateReceiver::getRecordedStateSamples() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return recorded_samples_;
+}
+
+std::vector<StateReceiver::RcCommandSample> StateReceiver::getRecordedRcCommandSamples() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return recorded_rc_samples_;
+}
+
+void StateReceiver::recordRcCommandSample(
+    int a,
+    int b,
+    int c,
+    int d,
+    const std::string& source,
+    ResponseCode response) {
+    const auto now_sys = std::chrono::system_clock::now();
+    const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now_sys.time_since_epoch()).count();
+
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    if (!recording_enabled_) {
+        return;
+    }
+
+    if (recording_start_timestamp_ms_ < 0) {
+        recording_start_timestamp_ms_ = ts_ms;
+    }
+
+    RcCommandSample sample;
+    sample.sequence = next_rc_sequence_++;
+    sample.timestamp_ms = ts_ms;
+    sample.recording_elapsed_ms = ts_ms - recording_start_timestamp_ms_;
+    sample.a = a;
+    sample.b = b;
+    sample.c = c;
+    sample.d = d;
+    sample.source = source;
+    sample.response = response;
+    recorded_rc_samples_.push_back(std::move(sample));
+}
+
+void StateReceiver::clearRecordedStateSamples() {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    recorded_samples_.clear();
+    recorded_rc_samples_.clear();
+    recording_start_timestamp_ms_ = -1;
+}
+
+ResponseCode StateReceiver::exportRecordedStateCsv(const std::string& file_path) const {
+    std::vector<StateSample> samples;
+    std::vector<RcCommandSample> rc_samples;
+    {
+        std::lock_guard<std::mutex> lock(history_mutex_);
+        samples = recorded_samples_;
+        rc_samples = recorded_rc_samples_;
+    }
+
+    std::ofstream csv(file_path, std::ios::out | std::ios::trunc);
+    if (!csv.is_open()) {
+        return ResponseCode::ERROR;
+    }
+
+    csv << "state_sequence,timestamp_ms,recording_elapsed_ms,"
+        << "pitch,roll,yaw,"
+        << "vgx,vgy,vgz,"
+        << "templ,temph,tof,h,bat,"
+        << "baro,time,agx,agy,agz,"
+        << "mid,x,y,z,"
+        << "rc_a,rc_b,rc_c,rc_d,rc_source,rc_result,rc_timestamp_ms,rc_sequence"
+        << '\n';
+
+    size_t i_rc = 0;
+    const RcCommandSample* active_rc = nullptr;
+
+    for (const auto& s : samples) {
+        while (i_rc < rc_samples.size() && rc_samples[i_rc].timestamp_ms <= s.timestamp_ms) {
+            active_rc = &rc_samples[i_rc];
+            ++i_rc;
+        }
+
+        csv << s.sequence << ','
+            << s.timestamp_ms << ','
+            << s.recording_elapsed_ms << ','
+            << s.state.pitch << ','
+            << s.state.roll << ','
+            << s.state.yaw << ','
+            << s.state.vgx << ','
+            << s.state.vgy << ','
+            << s.state.vgz << ','
+            << s.state.templ << ','
+            << s.state.temph << ','
+            << s.state.tof << ','
+            << s.state.h << ','
+            << s.state.bat << ','
+            << s.state.baro << ','
+            << s.state.time << ','
+            << s.state.agx << ','
+            << s.state.agy << ','
+            << s.state.agz << ','
+            << s.state.mid << ','
+            << s.state.x << ','
+            << s.state.y << ','
+            << s.state.z << ',';
+
+        if (active_rc != nullptr) {
+            csv << active_rc->a << ','
+                << active_rc->b << ','
+                << active_rc->c << ','
+                << active_rc->d << ','
+                << '"' << active_rc->source << '"' << ','
+                << '"' << responseCodeToString(active_rc->response) << '"' << ','
+                << active_rc->timestamp_ms << ','
+                << active_rc->sequence;
+        } else {
+            csv << ",,,,,,,";
+        }
+
+        csv << '\n';
+    }
+
+    return ResponseCode::OK;
+}
+
 void StateReceiver::receiveLoop() {
     // We keep this loop resilient: packet-level parse errors do not kill the receiver.
     std::vector<uint8_t> buffer(4096);
@@ -182,6 +378,34 @@ void StateReceiver::receiveLoop() {
                 ++stats_.packets_invalid;
             }
             continue;
+        }
+
+        const auto now_sys = std::chrono::system_clock::now();
+        const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_sys.time_since_epoch()).count();
+
+        {
+            std::lock_guard<std::mutex> lock(history_mutex_);
+
+            StateSample sample;
+            sample.sequence = next_state_sequence_++;
+            sample.timestamp_ms = ts_ms;
+            sample.state = parsed;
+
+            if (recording_enabled_) {
+                if (recording_start_timestamp_ms_ < 0) {
+                    recording_start_timestamp_ms_ = ts_ms;
+                }
+                sample.recording_elapsed_ms = ts_ms - recording_start_timestamp_ms_;
+                recorded_samples_.push_back(sample);
+            }
+
+            if (state_buffer_capacity_ > 0) {
+                if (state_buffer_.size() >= state_buffer_capacity_) {
+                    state_buffer_.pop_front();
+                }
+                state_buffer_.push_back(sample);
+            }
         }
 
         {
