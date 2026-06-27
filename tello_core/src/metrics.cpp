@@ -278,6 +278,13 @@ void MetricsCollector::setEvent(const std::string& event) {
     snapshot_.event = event;
 }
 
+void MetricsCollector::updateLogMessage(const std::string& timestamp, const std::string& message) {
+    // Log message fields preserve user-visible panel messages in the metrics CSV.
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.log_timestamp = timestamp;
+    snapshot_.log_message = message;
+}
+
 void MetricsCollector::setConnectionState(const std::string& state) {
     // Connection state stores the caller's current high-level session state.
     std::lock_guard<std::mutex> lock(mutex_);
@@ -395,7 +402,7 @@ std::string MetricsCollector::toCsvHeader() const {
            "nal_packets_in,nal_bytes_in,nal_units,nal_sps,nal_pps,nal_idr,nal_non_idr,nal_other,nal_decode_gated,nal_resyncs,nal_buffered_bytes,"
            "decoder_nals_in,decoder_packets_sent,decoder_frames_decoded,decoder_errors,decoder_fps_ema,"
            "frame_width,frame_height,keyframes,paused,overlay_enabled,"
-           "recovery_attempted,recovery_result,recovery_hard,recovery_stage,recovery_command_channel_available,event,connection_state,last_outage_failures,"
+           "recovery_attempted,recovery_result,recovery_hard,recovery_stage,recovery_command_channel_available,event,log_timestamp,log_message,connection_state,last_outage_failures,"
            "plot_metric,state_sequence_delta,state_receiver_running,"
            "rc_stream_active,rc_left_right,rc_forward_back,rc_up_down,rc_yaw,"
            "keepalive_running,auto_refresh_active,critical_command_active,"
@@ -497,6 +504,8 @@ std::string MetricsCollector::toCsvLine() const {
         << csvEscape(s.recovery_stage) << ','
         << (s.recovery_command_channel_available ? 1 : 0) << ','
         << csvEscape(s.event) << ','
+        << csvEscape(s.log_timestamp) << ','
+        << csvEscape(s.log_message) << ','
         << csvEscape(s.connection_state) << ','
         << s.last_outage_failures << ','
         << csvEscape(s.plot_metric) << ','

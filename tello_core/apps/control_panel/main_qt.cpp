@@ -8,35 +8,51 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QKeyEvent>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMetaObject>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
-#include <QStackedWidget>
 #include <QSignalBlocker>
 #include <QTextEdit>
+#include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QFile>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <csignal>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -93,6 +109,70 @@ QString wifiQualityLabel(const QString& raw) {
 
 bool isCriticalFlightCommand(const std::string& cmd) {
     return cmd == "takeoff" || cmd == "land" || cmd == "emergency";
+}
+
+struct ControlProfile {
+    QString name = "Default";
+    QString input_type = "keyboard";
+    int aggression = 20;
+    std::map<QString, int> key_by_action;
+};
+
+struct RcChannels {
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    int d = 0;
+};
+
+std::vector<QString> controlProfileActions() {
+    return {
+        "left",
+        "right",
+        "forward",
+        "back",
+        "up",
+        "down",
+        "yaw_left",
+        "yaw_right",
+    };
+}
+
+QString controlProfileActionLabel(const QString& action) {
+    if (action == "left") return "Left / rc a -";
+    if (action == "right") return "Right / rc a +";
+    if (action == "forward") return "Forward / rc b +";
+    if (action == "back") return "Back / rc b -";
+    if (action == "up") return "Up / rc c +";
+    if (action == "down") return "Down / rc c -";
+    if (action == "yaw_left") return "Yaw left / rc d -";
+    if (action == "yaw_right") return "Yaw right / rc d +";
+    return action;
+}
+
+int sequenceToKey(const QKeySequence& sequence) {
+    if (sequence.isEmpty()) {
+        return 0;
+    }
+    return sequence[0] & ~Qt::KeyboardModifierMask;
+}
+
+ControlProfile defaultControlProfile() {
+    ControlProfile profile;
+    profile.name = "Default";
+    profile.input_type = "keyboard";
+    profile.aggression = 20;
+    profile.key_by_action = {
+        {"left", Qt::Key_A},
+        {"right", Qt::Key_D},
+        {"forward", Qt::Key_Up},
+        {"back", Qt::Key_Down},
+        {"up", Qt::Key_W},
+        {"down", Qt::Key_S},
+        {"yaw_left", Qt::Key_Left},
+        {"yaw_right", Qt::Key_Right},
+    };
+    return profile;
 }
 
 double metricFromState(const tello::TelloState& s, const QString& metric) {
@@ -152,7 +232,7 @@ protected:
         QPainter p(this);
         p.fillRect(rect(), QColor(20, 24, 28));
 
-        const QRectF plot_rect = rect().adjusted(42, 12, -12, -28);
+        const QRectF plot_rect = rect().adjusted(42, 34, -12, -28);
         p.setPen(QPen(QColor(80, 86, 94), 1));
         p.drawRect(plot_rect);
 
@@ -187,6 +267,9 @@ protected:
             y_min -= 1.0;
         }
 
+        const double data_y_min = y_min;
+        const double data_y_max = y_max;
+        const double current_value = metricFromState(samples_.back().state, metric_);
         const double y_pad = (y_max - y_min) * 0.08;
         y_max += y_pad;
         y_min -= y_pad;
@@ -225,14 +308,13 @@ protected:
         p.drawPath(path);
 
         p.setPen(QPen(Qt::lightGray));
-        p.drawText(QPointF(plot_rect.left(), 10),
-                   QString("current=%1")
-                       .arg(metricFromState(samples_.back().state, metric_), 0, 'f', 2));
-        p.drawText(QPointF(plot_rect.left(), plot_rect.top() - 2),
+        p.drawText(QPointF(plot_rect.left(), 14),
                    QString("%1  [min=%2 max=%3]")
                        .arg(metric_)
-                       .arg(y_min, 0, 'f', 2)
-                       .arg(y_max, 0, 'f', 2));
+                       .arg(data_y_min, 0, 'f', 2)
+                       .arg(data_y_max, 0, 'f', 2));
+        p.drawText(QPointF(plot_rect.left(), 30),
+                   QString("current=%1").arg(current_value, 0, 'f', 2));
         p.drawText(QPointF(plot_rect.left(), rect().bottom() - 6), "t=0");
         p.drawText(QPointF(plot_rect.right() - 80, rect().bottom() - 6),
                    QString("t=%1 ms").arg(t1 - t0));
@@ -251,8 +333,10 @@ private:
 class ControlPanelWidget final : public QWidget {
 public:
     ControlPanelWidget() {
-        setWindowTitle("Tello Control Panel (Qt - Phase G Delivery C)");
+        setWindowTitle("Tello Control Panel");
         resize(1220, 900);
+        setMinimumSize(720, 520);
+        setFocusPolicy(Qt::StrongFocus);
 
         auto* root = new QVBoxLayout(this);
 
@@ -279,39 +363,39 @@ public:
 
         log_view_ = new QTextEdit(this);
         log_view_->setReadOnly(true);
-        log_view_->setMinimumHeight(180);
+        log_view_->setMinimumHeight(100);
         root->addWidget(log_view_);
 
-        auto* panel_sel_row = new QHBoxLayout();
-        panel_sel_row->addWidget(new QLabel("Panel:", this));
-        panel_selector_ = new QComboBox(this);
-        panel_selector_->addItem("Config");
-        panel_selector_->addItem("Operation");
-        panel_sel_row->addWidget(panel_selector_);
-        panel_sel_row->addStretch(1);
-        root->addLayout(panel_sel_row);
-
-        panel_stack_ = new QStackedWidget(this);
+        panel_tabs_ = new QTabWidget(this);
+        auto make_scroll_page = [this](QWidget* page) {
+            auto* scroll = new QScrollArea(this);
+            scroll->setWidgetResizable(true);
+            scroll->setFrameShape(QFrame::NoFrame);
+            scroll->setWidget(page);
+            return scroll;
+        };
 
         auto* config_page = new QWidget(this);
         auto* config_layout = new QVBoxLayout(config_page);
-        buildAutoRefreshAndCsvGroup(config_layout);
+        buildLoggingExportConfigurationGroup(config_layout);
+        buildControlProfileGroup(config_layout);
         buildReadGroup(config_layout);
         buildSetGroup(config_layout);
         buildMotionGroup(config_layout);
         buildRawGroup(config_layout);
         config_layout->addStretch(1);
-        panel_stack_->addWidget(config_page);
+        panel_tabs_->addTab(make_scroll_page(config_page), "Config");
 
         auto* operation_page = new QWidget(this);
         auto* operation_layout = new QVBoxLayout(operation_page);
+        buildKeyboardControlGroup(operation_layout);
         buildRcOperationGroup(operation_layout);
         buildStateHistoryGroup(operation_layout);
         buildVisionGroup(operation_layout);
         operation_layout->addStretch(1);
-        panel_stack_->addWidget(operation_page);
+        panel_tabs_->addTab(make_scroll_page(operation_page), "Operation");
 
-        root->addWidget(panel_stack_, 1);
+        root->addWidget(panel_tabs_, 1);
 
         auto_refresh_timer_ = new QTimer(this);
         rc_stream_timer_ = new QTimer(this);
@@ -337,25 +421,78 @@ public:
         connect(vision_view_timer_, &QTimer::timeout, this, [this]() { refreshVisionView(); });
         vision_view_timer_->start(120);
 
-        connect(panel_selector_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int idx) {
-            if (panel_stack_ != nullptr) {
-                panel_stack_->setCurrentIndex(idx);
-            }
+        connect(panel_tabs_, &QTabWidget::currentChanged, this, [this](int idx) {
             appendLog(QString("panel switched to %1").arg(idx == 0 ? "Config" : "Operation"));
         });
+        connect(qApp, &QApplication::aboutToQuit, this, [this]() {
+            performEmergencyShutdownIfConnected("application quit");
+        });
+
+        loadControlProfiles();
+        qApp->installEventFilter(this);
 
         appendLog("Panel ready. Click Connect + SDK first.");
-        appendLog("Delivery C active: optional auto-refresh + CSV export.");
+        appendLog("Logging export configuration active.");
         appendLog("Buttons added for control/set/read command families.");
+        appendLog("Keyboard control profiles loaded from control_profiles.json.");
         updateStatusLabel();
     }
 
     ~ControlPanelWidget() override {
+        performEmergencyShutdownIfConnected("panel destructor");
+        qApp->removeEventFilter(this);
         stopVisionPipeline();
         setRcStreamingEnabled(false, "panel shutdown");
         closeCsv();
         state_receiver_.stop();
         client_.shutdown();
+    }
+
+protected:
+    void closeEvent(QCloseEvent* event) override {
+        performEmergencyShutdownIfConnected("window close");
+        QWidget::closeEvent(event);
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        (void)watched;
+        if (!keyboard_control_active_ || critical_command_active_) {
+            return false;
+        }
+        if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) {
+            return false;
+        }
+
+        QWidget* focused = QApplication::focusWidget();
+        if (focused != nullptr
+            && (qobject_cast<QLineEdit*>(focused) != nullptr
+                || qobject_cast<QTextEdit*>(focused) != nullptr
+                || qobject_cast<QKeySequenceEdit*>(focused) != nullptr
+                || qobject_cast<QSpinBox*>(focused) != nullptr)) {
+            return false;
+        }
+
+        auto* key_event = static_cast<QKeyEvent*>(event);
+        if (key_event->isAutoRepeat()) {
+            return true;
+        }
+
+        const int key = key_event->key() & ~Qt::KeyboardModifierMask;
+        if (!isKeyMappedInActiveProfile(key)) {
+            return false;
+        }
+
+        if (event->type() == QEvent::KeyPress) {
+            active_keyboard_keys_.insert(key);
+        } else {
+            active_keyboard_keys_.erase(key);
+        }
+
+        updateKeyboardControlPreview();
+        if (active_keyboard_keys_.empty() && sdk_ready_) {
+            sendRcCommandNoWait("rc 0 0 0 0", "keyboard-neutral");
+        }
+        return true;
     }
 
 private:
@@ -394,59 +531,128 @@ private:
         root->addWidget(g);
     }
 
-    void buildAutoRefreshAndCsvGroup(QVBoxLayout* root) {
-        auto* g = new QGroupBox("Delivery C: Auto Refresh + CSV", this);
+    void buildLoggingExportConfigurationGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("Logging Export Configuration", this);
         auto* l = new QGridLayout(g);
 
-        auto_refresh_check_ = new QCheckBox("Enable battery?/wifi? auto-refresh", g);
-        auto_refresh_interval_ms_ = new QSpinBox(g);
-        auto_refresh_interval_ms_->setRange(200, 10000);
-        auto_refresh_interval_ms_->setValue(1000);
-
-        csv_enabled_ = new QCheckBox("Enable CSV", g);
         csv_path_edit_ = new QLineEdit("control_panel_commands.csv", g);
+        state_record_path_edit_ = new QLineEdit("state_recording.csv", g);
+        auto* start_logging_btn = new QPushButton("Start Recording", g);
+        auto* stop_logging_btn = new QPushButton("Stop Recording", g);
+        auto* clear_logging_btn = new QPushButton("Clear Recording", g);
+        auto* export_csvs_btn = new QPushButton("Export CSVs", g);
+        auto* browse_gui_btn = new QPushButton("Browse...", g);
+        auto* browse_state_btn = new QPushButton("Browse...", g);
+        state_record_info_label_ = new QLabel("recorded=0", g);
 
-        l->addWidget(auto_refresh_check_, 0, 0, 1, 2);
-        l->addWidget(new QLabel("interval ms:", g), 0, 2);
-        l->addWidget(auto_refresh_interval_ms_, 0, 3);
+        l->addWidget(new QLabel("GUI metrics csv:", g), 0, 0);
+        l->addWidget(csv_path_edit_, 0, 1, 1, 3);
+        l->addWidget(browse_gui_btn, 0, 4);
 
-        l->addWidget(csv_enabled_, 1, 0);
-        l->addWidget(new QLabel("csv path:", g), 1, 1);
-        l->addWidget(csv_path_edit_, 1, 2, 1, 2);
+        l->addWidget(new QLabel("state csv:"), 1, 0);
+        l->addWidget(state_record_path_edit_, 1, 1, 1, 3);
+        l->addWidget(browse_state_btn, 1, 4);
 
-        connect(auto_refresh_check_, &QCheckBox::toggled, this, [this](bool enabled) {
-            if (!enabled) {
-                auto_refresh_timer_->stop();
-                appendLog("auto-refresh OFF");
-                return;
-            }
-            if (!sdk_ready_) {
-                appendLog("auto-refresh requires Connect + SDK first");
-                auto_refresh_check_->setChecked(false);
-                return;
-            }
-            auto_refresh_timer_->start(auto_refresh_interval_ms_->value());
-            appendLog(QString("auto-refresh ON (%1 ms)").arg(auto_refresh_interval_ms_->value()));
-        });
+        l->addWidget(start_logging_btn, 2, 0);
+        l->addWidget(stop_logging_btn, 2, 1);
+        l->addWidget(clear_logging_btn, 2, 2);
+        l->addWidget(export_csvs_btn, 2, 3, 1, 2);
+        l->addWidget(state_record_info_label_, 3, 0, 1, 5);
 
-        connect(auto_refresh_interval_ms_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
-            if (auto_refresh_check_->isChecked()) {
-                auto_refresh_timer_->start(auto_refresh_interval_ms_->value());
-            }
-        });
+        connect(start_logging_btn, &QPushButton::clicked, this, [this]() { startLoggingRecording(); });
+        connect(stop_logging_btn, &QPushButton::clicked, this, [this]() { stopLoggingRecording(); });
+        connect(clear_logging_btn, &QPushButton::clicked, this, [this]() { clearLoggingRecording(); });
+        connect(export_csvs_btn, &QPushButton::clicked, this, [this]() { exportAllCsvs(); });
 
-        connect(csv_enabled_, &QCheckBox::toggled, this, [this](bool enabled) {
-            if (!enabled) {
-                closeCsv();
-                appendLog("csv export OFF");
-                return;
-            }
-            if (openCsv()) {
-                appendLog("csv export ON");
-            } else {
-                csv_enabled_->setChecked(false);
+        connect(browse_gui_btn, &QPushButton::clicked, this, [this]() {
+            const QString picked = QFileDialog::getSaveFileName(
+                this,
+                "GUI Metrics CSV",
+                csv_path_edit_->text().trimmed(),
+                "CSV (*.csv);;All files (*)");
+            if (!picked.isEmpty()) {
+                csv_path_edit_->setText(picked);
             }
         });
+
+        connect(browse_state_btn, &QPushButton::clicked, this, [this]() {
+            const QString picked = QFileDialog::getSaveFileName(
+                this,
+                "State CSV",
+                state_record_path_edit_->text().trimmed(),
+                "CSV (*.csv);;All files (*)");
+            if (!picked.isEmpty()) {
+                state_record_path_edit_->setText(picked);
+            }
+        });
+
+        root->addWidget(g);
+    }
+
+    void buildControlProfileGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("Control Profiles", this);
+        auto* l = new QGridLayout(g);
+
+        control_profile_combo_ = new QComboBox(g);
+        control_profile_name_edit_ = new QLineEdit(g);
+        control_profile_input_combo_ = new QComboBox(g);
+        control_profile_input_combo_->addItems({"keyboard", "joystick"});
+        control_profile_input_combo_->setEnabled(false);
+        control_profile_aggression_spin_ = new QSpinBox(g);
+        control_profile_aggression_spin_->setRange(1, 100);
+        control_profile_aggression_spin_->setValue(20);
+
+        auto* new_btn = new QPushButton("New", g);
+        auto* save_btn = new QPushButton("Save", g);
+        auto* delete_btn = new QPushButton("Delete", g);
+
+        l->addWidget(new QLabel("profile:"), 0, 0);
+        l->addWidget(control_profile_combo_, 0, 1);
+        l->addWidget(new_btn, 0, 2);
+        l->addWidget(save_btn, 0, 3);
+        l->addWidget(delete_btn, 0, 4);
+
+        l->addWidget(new QLabel("name:"), 1, 0);
+        l->addWidget(control_profile_name_edit_, 1, 1);
+        l->addWidget(new QLabel("input:"), 1, 2);
+        l->addWidget(control_profile_input_combo_, 1, 3);
+        l->addWidget(new QLabel("RC aggression:"), 2, 0);
+        l->addWidget(control_profile_aggression_spin_, 2, 1);
+
+        const std::vector<QString> left_column_actions = {"left", "right", "forward", "back"};
+        const std::vector<QString> right_column_actions = {"up", "down", "yaw_left", "yaw_right"};
+        for (int i = 0; i < static_cast<int>(left_column_actions.size()); ++i) {
+            const QString action = left_column_actions[static_cast<size_t>(i)];
+            auto* edit = new QKeySequenceEdit(g);
+            control_key_edits_[action] = edit;
+            l->addWidget(new QLabel(controlProfileActionLabel(action) + ":"), 3 + i, 0);
+            l->addWidget(edit, 3 + i, 1);
+        }
+        for (int i = 0; i < static_cast<int>(right_column_actions.size()); ++i) {
+            const QString action = right_column_actions[static_cast<size_t>(i)];
+            auto* edit = new QKeySequenceEdit(g);
+            control_key_edits_[action] = edit;
+            l->addWidget(new QLabel(controlProfileActionLabel(action) + ":"), 3 + i, 2);
+            l->addWidget(edit, 3 + i, 3);
+        }
+
+        auto* joystick_note = new QLabel(
+            "Joystick profiles use the same schema, but live joystick input is not enabled in this build.",
+            g);
+        joystick_note->setWordWrap(true);
+        l->addWidget(joystick_note, 7, 0, 1, 4);
+
+        connect(control_profile_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int idx) {
+            if (idx >= 0) {
+                active_control_profile_index_ = idx;
+                populateControlProfileEditorFromActive();
+                updateKeyboardControlPreview();
+            }
+        });
+
+        connect(new_btn, &QPushButton::clicked, this, [this]() { createControlProfile(); });
+        connect(save_btn, &QPushButton::clicked, this, [this]() { saveControlProfileFromEditor(); });
+        connect(delete_btn, &QPushButton::clicked, this, [this]() { deleteActiveControlProfile(); });
 
         root->addWidget(g);
     }
@@ -457,7 +663,7 @@ private:
 
         speed_spin_ = new QSpinBox(g);
         speed_spin_->setRange(10, 100);
-        speed_spin_->setValue(50);
+        speed_spin_->setValue(100);
         auto* speed_btn = new QPushButton("Send speed x", g);
 
         l->addWidget(new QLabel("speed x"), 0, 0);
@@ -548,10 +754,12 @@ private:
         connect_slider(rc_yaw_slider_, rc_yaw_value_);
 
         connect(send_once_btn, &QPushButton::clicked, this, [this]() {
+            forceKeyboardControlOff("send-rc-once");
             runCommandWithResponse(buildRcCommandFromInputs(), "manual");
         });
 
         connect(zero_send_btn, &QPushButton::clicked, this, [this]() {
+            forceKeyboardControlOff("zero-all-send");
             setRcSliders(0, 0, 0, 0);
             runCommandWithResponse("rc 0 0 0 0", "manual");
         });
@@ -575,6 +783,345 @@ private:
         root->addWidget(g);
     }
 
+    void buildKeyboardControlGroup(QVBoxLayout* root) {
+        auto* g = new QGroupBox("Keyboard Control", this);
+        auto* l = new QGridLayout(g);
+
+        keyboard_control_check_ = new QCheckBox("Enable keyboard RC control", g);
+        keyboard_control_profile_label_ = new QLabel("profile: --", g);
+        keyboard_control_vector_label_ = new QLabel("rc 0 0 0 0", g);
+
+        l->addWidget(keyboard_control_check_, 0, 0, 1, 2);
+        l->addWidget(keyboard_control_profile_label_, 1, 0, 1, 2);
+        l->addWidget(keyboard_control_vector_label_, 2, 0, 1, 2);
+
+        connect(keyboard_control_check_, &QCheckBox::toggled, this, [this](bool enabled) {
+            setKeyboardControlEnabled(enabled);
+        });
+
+        root->addWidget(g);
+    }
+
+    QString controlProfilesPath() const {
+        return "control_profiles.json";
+    }
+
+    QJsonObject controlProfileToJson(const ControlProfile& profile) const {
+        QJsonObject root;
+        root["name"] = profile.name;
+        root["input_type"] = profile.input_type;
+        root["aggression"] = profile.aggression;
+
+        QJsonObject bindings;
+        for (const auto& action : controlProfileActions()) {
+            const auto it = profile.key_by_action.find(action);
+            bindings[action] = it != profile.key_by_action.end() ? it->second : 0;
+        }
+        root["key_bindings"] = bindings;
+        return root;
+    }
+
+    ControlProfile controlProfileFromJson(const QJsonObject& obj) const {
+        ControlProfile profile = defaultControlProfile();
+        profile.name = obj.value("name").toString(profile.name).trimmed();
+        if (profile.name.isEmpty()) {
+            profile.name = "Default";
+        }
+        profile.input_type = obj.value("input_type").toString("keyboard");
+        profile.aggression = std::clamp(obj.value("aggression").toInt(20), 1, 100);
+
+        const QJsonObject bindings = obj.value("key_bindings").toObject();
+        for (const auto& action : controlProfileActions()) {
+            profile.key_by_action[action] = bindings.value(action).toInt(profile.key_by_action[action]);
+        }
+        return profile;
+    }
+
+    void loadControlProfiles() {
+        control_profiles_.clear();
+
+        QFile file(controlProfilesPath());
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+            const QJsonArray profiles = doc.object().value("profiles").toArray();
+            for (const auto& value : profiles) {
+                if (value.isObject()) {
+                    control_profiles_.push_back(controlProfileFromJson(value.toObject()));
+                }
+            }
+        }
+
+        if (control_profiles_.empty()) {
+            control_profiles_.push_back(defaultControlProfile());
+            saveControlProfiles();
+        }
+
+        active_control_profile_index_ = std::clamp(active_control_profile_index_, 0, static_cast<int>(control_profiles_.size()) - 1);
+        refreshControlProfileCombo();
+        populateControlProfileEditorFromActive();
+        updateKeyboardControlPreview();
+    }
+
+    void saveControlProfiles() {
+        QJsonObject root;
+        QJsonArray profiles;
+        for (const auto& profile : control_profiles_) {
+            profiles.append(controlProfileToJson(profile));
+        }
+        root["version"] = 1;
+        root["profiles"] = profiles;
+
+        QFile file(controlProfilesPath());
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            appendLog("failed to save control profiles: " + controlProfilesPath());
+            return;
+        }
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    }
+
+    void refreshControlProfileCombo() {
+        if (control_profile_combo_ == nullptr) {
+            return;
+        }
+        QSignalBlocker blocker(control_profile_combo_);
+        control_profile_combo_->clear();
+        for (const auto& profile : control_profiles_) {
+            control_profile_combo_->addItem(profile.name);
+        }
+        control_profile_combo_->setCurrentIndex(active_control_profile_index_);
+    }
+
+    ControlProfile activeControlProfile() const {
+        if (control_profiles_.empty()) {
+            return defaultControlProfile();
+        }
+        const int idx = std::clamp(active_control_profile_index_, 0, static_cast<int>(control_profiles_.size()) - 1);
+        return control_profiles_[static_cast<size_t>(idx)];
+    }
+
+    void populateControlProfileEditorFromActive() {
+        if (control_profiles_.empty()) {
+            return;
+        }
+        const ControlProfile profile = activeControlProfile();
+        if (control_profile_name_edit_ != nullptr) {
+            control_profile_name_edit_->setText(profile.name);
+        }
+        if (control_profile_input_combo_ != nullptr) {
+            control_profile_input_combo_->setCurrentText(profile.input_type);
+        }
+        if (control_profile_aggression_spin_ != nullptr) {
+            control_profile_aggression_spin_->setValue(profile.aggression);
+        }
+        for (auto& item : control_key_edits_) {
+            const auto it = profile.key_by_action.find(item.first);
+            item.second->setKeySequence(QKeySequence(it != profile.key_by_action.end() ? it->second : 0));
+        }
+    }
+
+    ControlProfile controlProfileFromEditor() const {
+        ControlProfile profile = activeControlProfile();
+        if (control_profile_name_edit_ != nullptr) {
+            profile.name = control_profile_name_edit_->text().trimmed();
+        }
+        if (profile.name.isEmpty()) {
+            profile.name = "Default";
+        }
+        profile.input_type = control_profile_input_combo_ != nullptr
+            ? control_profile_input_combo_->currentText()
+            : "keyboard";
+        profile.aggression = control_profile_aggression_spin_ != nullptr
+            ? control_profile_aggression_spin_->value()
+            : 20;
+        for (const auto& item : control_key_edits_) {
+            profile.key_by_action[item.first] = sequenceToKey(item.second->keySequence());
+        }
+        return profile;
+    }
+
+    void createControlProfile() {
+        bool accepted = false;
+        const QString name = QInputDialog::getText(
+            this,
+            "New Control Profile",
+            "Profile name:",
+            QLineEdit::Normal,
+            "New Profile",
+            &accepted).trimmed();
+        if (!accepted || name.isEmpty()) {
+            return;
+        }
+
+        ControlProfile profile = activeControlProfile();
+        profile.name = name;
+        control_profiles_.push_back(profile);
+        active_control_profile_index_ = static_cast<int>(control_profiles_.size()) - 1;
+        refreshControlProfileCombo();
+        populateControlProfileEditorFromActive();
+        saveControlProfiles();
+        appendLog("control profile created: " + name);
+    }
+
+    void saveControlProfileFromEditor() {
+        if (control_profiles_.empty()) {
+            control_profiles_.push_back(defaultControlProfile());
+        }
+        active_control_profile_index_ = std::clamp(active_control_profile_index_, 0, static_cast<int>(control_profiles_.size()) - 1);
+        control_profiles_[static_cast<size_t>(active_control_profile_index_)] = controlProfileFromEditor();
+        refreshControlProfileCombo();
+        saveControlProfiles();
+        updateKeyboardControlPreview();
+        appendLog("control profile saved: " + activeControlProfile().name);
+    }
+
+    void deleteActiveControlProfile() {
+        if (control_profiles_.size() <= 1) {
+            appendLog("at least one control profile must exist");
+            return;
+        }
+        const QString removed = activeControlProfile().name;
+        control_profiles_.erase(control_profiles_.begin() + active_control_profile_index_);
+        active_control_profile_index_ = std::max(0, active_control_profile_index_ - 1);
+        refreshControlProfileCombo();
+        populateControlProfileEditorFromActive();
+        saveControlProfiles();
+        updateKeyboardControlPreview();
+        appendLog("control profile deleted: " + removed);
+    }
+
+    bool isKeyMappedInActiveProfile(int key) const {
+        const ControlProfile profile = activeControlProfile();
+        for (const auto& item : profile.key_by_action) {
+            if (item.second == key) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    RcChannels rcChannelsFromKeyboard() const {
+        const ControlProfile profile = activeControlProfile();
+        const int v = profile.aggression;
+        RcChannels rc;
+
+        auto pressed = [this, &profile](const QString& action) {
+            const auto it = profile.key_by_action.find(action);
+            return it != profile.key_by_action.end() && active_keyboard_keys_.count(it->second) > 0;
+        };
+
+        if (pressed("left")) rc.a -= v;
+        if (pressed("right")) rc.a += v;
+        if (pressed("forward")) rc.b += v;
+        if (pressed("back")) rc.b -= v;
+        if (pressed("up")) rc.c += v;
+        if (pressed("down")) rc.c -= v;
+        if (pressed("yaw_left")) rc.d -= v;
+        if (pressed("yaw_right")) rc.d += v;
+
+        rc.a = std::clamp(rc.a, -100, 100);
+        rc.b = std::clamp(rc.b, -100, 100);
+        rc.c = std::clamp(rc.c, -100, 100);
+        rc.d = std::clamp(rc.d, -100, 100);
+        return rc;
+    }
+
+    std::string buildRcCommand(const RcChannels& rc) const {
+        return "rc "
+            + std::to_string(rc.a) + " "
+            + std::to_string(rc.b) + " "
+            + std::to_string(rc.c) + " "
+            + std::to_string(rc.d);
+    }
+
+    std::string buildRcCommandFromKeyboard() const {
+        return buildRcCommand(rcChannelsFromKeyboard());
+    }
+
+    void updateKeyboardControlPreview() {
+        const ControlProfile profile = activeControlProfile();
+        if (keyboard_control_profile_label_ != nullptr) {
+            keyboard_control_profile_label_->setText(
+                QString("profile: %1 | aggression=%2").arg(profile.name).arg(profile.aggression));
+        }
+        if (keyboard_control_vector_label_ != nullptr) {
+            keyboard_control_vector_label_->setText(QString::fromStdString(buildRcCommandFromKeyboard()));
+        }
+    }
+
+    void setKeyboardControlEnabled(bool enabled) {
+        if (enabled && !sdk_ready_) {
+            appendLog("keyboard control requires Connect + SDK first");
+            if (keyboard_control_check_ != nullptr) {
+                QSignalBlocker blocker(keyboard_control_check_);
+                keyboard_control_check_->setChecked(false);
+            }
+            return;
+        }
+
+        keyboard_control_active_ = enabled;
+        active_keyboard_keys_.clear();
+        updateKeyboardControlPreview();
+
+        if (enabled) {
+            if (rc_stream_timer_ != nullptr) {
+                rc_stream_timer_->start(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50);
+            }
+            appendLog("keyboard control ON: " + activeControlProfile().name);
+            writeEventMetricsRow(QString("keyboard-control:on:") + activeControlProfile().name);
+            setFocus();
+            return;
+        }
+
+        sendRcCommandNoWait("rc 0 0 0 0", "keyboard-neutral");
+        if (rc_stream_timer_ != nullptr && (rc_stream_check_ == nullptr || !rc_stream_check_->isChecked())) {
+            rc_stream_timer_->stop();
+        }
+        appendLog("keyboard control OFF");
+        writeEventMetricsRow("keyboard-control:off");
+    }
+
+    void forceKeyboardControlOff(const QString& reason) {
+        const bool was_enabled =
+            keyboard_control_active_
+            || (keyboard_control_check_ != nullptr && keyboard_control_check_->isChecked());
+        if (!was_enabled) {
+            return;
+        }
+
+        if (keyboard_control_check_ != nullptr) {
+            QSignalBlocker blocker(keyboard_control_check_);
+            keyboard_control_check_->setChecked(false);
+        }
+        keyboard_control_active_ = false;
+        active_keyboard_keys_.clear();
+        updateKeyboardControlPreview();
+
+        if (sdk_ready_) {
+            (void)sendRcCommandNoWait("rc 0 0 0 0", ("keyboard-neutral-" + reason).toStdString());
+        }
+        if (rc_stream_timer_ != nullptr && (rc_stream_check_ == nullptr || !rc_stream_check_->isChecked())) {
+            rc_stream_timer_->stop();
+        }
+
+        appendLog("keyboard control forced OFF (" + reason + ")");
+        writeEventMetricsRow("keyboard-control:forced-off:" + reason);
+    }
+
+    bool confirmTakeoff() {
+        const auto answer = QMessageBox::question(
+            this,
+            "Confirm takeoff",
+            "Do you really want to send takeoff?",
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            appendLog("takeoff cancelled");
+            return false;
+        }
+        appendLog("takeoff confirmed by user");
+        return true;
+    }
+
     void buildControlBasicsGroup(QVBoxLayout* root) {
         auto* g = new QGroupBox("Control Commands (basic)", this);
         auto* l = new QHBoxLayout(g);
@@ -584,7 +1131,11 @@ private:
         auto* emergency_btn = new QPushButton("emergency", g);
         auto* streamon_btn = new QPushButton("streamon", g);
         auto* streamoff_btn = new QPushButton("streamoff", g);
-        auto* stop_btn = new QPushButton("stop", g);
+        auto* stop_btn = new QPushButton("hover (stop)", g);
+        emergency_btn->setStyleSheet(
+            "QPushButton { background-color: #EE5858; color: white; font-weight: 600; }"
+            "QPushButton:hover { background-color: #F06A6A; }"
+            "QPushButton:pressed { background-color: #D94A4A; }");
 
         l->addWidget(takeoff_btn);
         l->addWidget(land_btn);
@@ -594,12 +1145,19 @@ private:
         l->addWidget(stop_btn);
         l->addStretch(1);
 
-        connect(takeoff_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("takeoff", "manual"); });
+        connect(takeoff_btn, &QPushButton::clicked, this, [this]() {
+            if (confirmTakeoff()) {
+                runCommandWithResponse("takeoff", "manual");
+            }
+        });
         connect(land_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("land", "manual"); });
         connect(emergency_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("emergency", "manual"); });
         connect(streamon_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("streamon", "manual"); });
         connect(streamoff_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("streamoff", "manual"); });
-        connect(stop_btn, &QPushButton::clicked, this, [this]() { runCommandWithResponse("stop", "manual"); });
+        connect(stop_btn, &QPushButton::clicked, this, [this]() {
+            forceKeyboardControlOff("hover-stop");
+            runCommandWithResponse("stop", "manual");
+        });
 
         root->addWidget(g);
     }
@@ -621,29 +1179,36 @@ private:
         flip_dir_ = new QLineEdit("l", g);
         flip_dir_->setMaxLength(1);
 
-        auto addRow = [this, g, l](int row, const QString& label, QSpinBox* spin, const QString& cmd_prefix) {
+        auto addRow = [this, g, l](
+            int row,
+            int col,
+            const QString& label,
+            QSpinBox* spin,
+            const QString& cmd_prefix
+        ) {
             auto* btn = new QPushButton("Send " + cmd_prefix + " x", g);
-            l->addWidget(new QLabel(label), row, 0);
-            l->addWidget(spin, row, 1);
-            l->addWidget(btn, row, 2);
+            l->addWidget(new QLabel(label), row, col);
+            l->addWidget(spin, row, col + 1);
+            l->addWidget(btn, row, col + 2);
             connect(btn, &QPushButton::clicked, this, [this, spin, cmd_prefix]() {
                 runCommandWithResponse(cmd_prefix.toStdString() + " " + std::to_string(spin->value()), "manual");
             });
         };
 
-        addRow(0, "up x", up_cm_, "up");
-        addRow(1, "down x", down_cm_, "down");
-        addRow(2, "left x", left_cm_, "left");
-        addRow(3, "right x", right_cm_, "right");
-        addRow(4, "forward x", forward_cm_, "forward");
-        addRow(5, "back x", back_cm_, "back");
-        addRow(6, "cw x", cw_deg_, "cw");
-        addRow(7, "ccw x", ccw_deg_, "ccw");
+        addRow(0, 0, "left x", left_cm_, "left");
+        addRow(1, 0, "right x", right_cm_, "right");
+        addRow(2, 0, "forward x", forward_cm_, "forward");
+        addRow(3, 0, "back x", back_cm_, "back");
+
+        addRow(0, 3, "up x", up_cm_, "up");
+        addRow(1, 3, "down x", down_cm_, "down");
+        addRow(2, 3, "cw x", cw_deg_, "cw");
+        addRow(3, 3, "ccw x", ccw_deg_, "ccw");
 
         auto* flip_btn = new QPushButton("Send flip x", g);
-        l->addWidget(new QLabel("flip x"), 8, 0);
-        l->addWidget(flip_dir_, 8, 1);
-        l->addWidget(flip_btn, 8, 2);
+        l->addWidget(new QLabel("flip x"), 4, 3);
+        l->addWidget(flip_dir_, 4, 4);
+        l->addWidget(flip_btn, 4, 5);
         connect(flip_btn, &QPushButton::clicked, this, [this]() {
             const QString d = flip_dir_->text().trimmed().toLower();
             if (!(d == "l" || d == "r" || d == "f" || d == "b")) {
@@ -683,15 +1248,10 @@ private:
         state_metric_combo_ = new QComboBox(g);
         state_metric_combo_->addItems({"pitch", "roll", "yaw", "vgx", "vgy", "vgz", "h", "tof", "battery", "baro", "agx", "agy", "agz"});
 
-        state_record_path_edit_ = new QLineEdit("state_recording.csv", g);
-        auto* browse_btn = new QPushButton("Browse...", g);
-        auto* start_rec_btn = new QPushButton("Start Recording", g);
-        auto* stop_rec_btn = new QPushButton("Stop Recording", g);
-        auto* clear_rec_btn = new QPushButton("Clear Recording", g);
-        auto* export_rec_btn = new QPushButton("Export CSV", g);
-
         state_buffer_info_label_ = new QLabel("buffer=0", g);
-        state_record_info_label_ = new QLabel("recorded=0", g);
+        state_record_dot_label_ = new QLabel(g);
+        state_record_dot_label_->setFixedSize(12, 12);
+        state_record_status_label_ = new QLabel("REC OFF", g);
 
         state_plot_widget_ = new StatePlotWidget(g);
 
@@ -700,19 +1260,11 @@ private:
         l->addWidget(apply_capacity_btn, 0, 2);
         l->addWidget(new QLabel("metric:"), 0, 3);
         l->addWidget(state_metric_combo_, 0, 4);
+        l->addWidget(state_record_dot_label_, 0, 5);
+        l->addWidget(state_record_status_label_, 0, 6);
 
-        l->addWidget(start_rec_btn, 1, 0);
-        l->addWidget(stop_rec_btn, 1, 1);
-        l->addWidget(clear_rec_btn, 1, 2);
-        l->addWidget(export_rec_btn, 1, 3);
-        l->addWidget(state_record_info_label_, 1, 4);
-
-        l->addWidget(new QLabel("recording csv:"), 2, 0);
-        l->addWidget(state_record_path_edit_, 2, 1, 1, 3);
-        l->addWidget(browse_btn, 2, 4);
-
-        l->addWidget(state_plot_widget_, 3, 0, 1, 5);
-        l->addWidget(state_buffer_info_label_, 4, 0, 1, 5);
+        l->addWidget(state_plot_widget_, 1, 0, 1, 7);
+        l->addWidget(state_buffer_info_label_, 2, 0, 1, 7);
 
         connect(apply_capacity_btn, &QPushButton::clicked, this, [this]() {
             state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
@@ -724,44 +1276,7 @@ private:
             writeEventMetricsRow("plot_metric_changed:" + metric);
         });
 
-        connect(start_rec_btn, &QPushButton::clicked, this, [this]() {
-            state_receiver_.startStateRecording();
-            appendLog("state recording started");
-        });
-
-        connect(stop_rec_btn, &QPushButton::clicked, this, [this]() {
-            state_receiver_.stopStateRecording();
-            appendLog("state recording stopped");
-        });
-
-        connect(clear_rec_btn, &QPushButton::clicked, this, [this]() {
-            state_receiver_.clearRecordedStateSamples();
-            appendLog("state recording cleared");
-        });
-
-        connect(export_rec_btn, &QPushButton::clicked, this, [this]() {
-            const QString path = state_record_path_edit_->text().trimmed();
-            if (path.isEmpty()) {
-                appendLog("state csv path is empty");
-                return;
-            }
-            const auto rc = state_receiver_.exportRecordedStateCsv(path.toStdString());
-            appendLog(QString("state csv export => %1 (%2)")
-                          .arg(QString::fromStdString(responseCodeToString(rc)))
-                          .arg(path));
-        });
-
-        connect(browse_btn, &QPushButton::clicked, this, [this]() {
-            const QString picked = QFileDialog::getSaveFileName(
-                this,
-                "Export State CSV",
-                state_record_path_edit_->text().trimmed(),
-                "CSV (*.csv);;All files (*)");
-            if (!picked.isEmpty()) {
-                state_record_path_edit_->setText(picked);
-            }
-        });
-
+        updateStateRecordingStatusIndicators();
         root->addWidget(g);
     }
 
@@ -844,6 +1359,7 @@ private:
 
     void refreshStateHistoryView() {
         const auto tick_started_at = std::chrono::steady_clock::now();
+        updateStateRecordingStatusIndicators();
         if (has_last_state_gui_tick_) {
             last_gui_state_tick_delay_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
                 tick_started_at - last_state_gui_tick_tp_).count();
@@ -1050,7 +1566,7 @@ private:
     void writeVisionRecoveryMetricsRow(
         const tello::VideoPipelineRecoveryResult& recovery,
         const tello::VideoReceiver::VideoStats& rx_stats) {
-        if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
+        if (!isGuiCsvRecording()) {
             return;
         }
 
@@ -1077,8 +1593,9 @@ private:
             recovery.session.command_channel_available);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
         metrics_.setEvent(recovery.power_cycle_recovery_used ? "vision_recovery:power_cycle" : "vision_recovery");
+        metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
-        csv_file_ << metrics_.toCsvLine() << std::endl;
+        gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 
     void maybeRecoverVisionPipeline(const tello::VideoReceiver::VideoStats& rx_stats) {
@@ -1396,7 +1913,11 @@ private:
 #endif
 
     void appendLog(const QString& msg) {
+        const QString timestamp = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
         log_view_->append("[" + nowClockString() + "] " + msg);
+        log_view_->repaint();
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        writeLogMetricsRow(timestamp, msg);
     }
 
     std::string buildRcCommandFromInputs() const {
@@ -1435,10 +1956,32 @@ private:
     }
 
     bool hasNonZeroRcInput() const {
-        return (rc_lr_slider_ != nullptr && rc_lr_slider_->value() != 0)
+        const RcChannels keyboard_rc = rcChannelsFromKeyboard();
+        return keyboard_rc.a != 0 || keyboard_rc.b != 0 || keyboard_rc.c != 0 || keyboard_rc.d != 0
+            || (rc_lr_slider_ != nullptr && rc_lr_slider_->value() != 0)
             || (rc_fb_slider_ != nullptr && rc_fb_slider_->value() != 0)
             || (rc_ud_slider_ != nullptr && rc_ud_slider_->value() != 0)
             || (rc_yaw_slider_ != nullptr && rc_yaw_slider_->value() != 0);
+    }
+
+    tello::ResponseCode sendRcCommandNoWait(const std::string& cmd, const std::string& source) {
+        if (!sdk_ready_) {
+            return tello::ResponseCode::ERROR;
+        }
+
+        const auto rc = client_.sendCommandNoWait(cmd);
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        int d = 0;
+        if (parseRcCommand(cmd, a, b, c, d)) {
+            state_receiver_.recordRcCommandSample(a, b, c, d, source, rc);
+            last_sent_rc_channels_ = RcChannels{a, b, c, d};
+        }
+        if (rc != tello::ResponseCode::OK) {
+            appendLog(QString::fromStdString(source) + " => " + QString::fromStdString(responseCodeToString(rc)));
+        }
+        return rc;
     }
 
     CommandTimingResult sendRcNeutralBestEffort(const QString& reason, bool write_metrics_row = true) {
@@ -1448,12 +1991,11 @@ private:
         }
 
         const auto started_at = std::chrono::steady_clock::now();
-        result.rc = client_.sendCommandNoWait("rc 0 0 0 0");
+        result.rc = sendRcCommandNoWait("rc 0 0 0 0", ("rc-neutral-" + reason).toStdString());
         result.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started_at).count();
         result.response = "no_wait";
 
-        state_receiver_.recordRcCommandSample(0, 0, 0, 0, ("rc-neutral-" + reason).toStdString(), result.rc);
         const QString rc_q = QString::fromStdString(responseCodeToString(result.rc));
         if (result.rc == tello::ResponseCode::OK) {
             appendLog("rc stream neutralized no-wait (" + reason + ") => " + rc_q);
@@ -1486,7 +2028,7 @@ private:
             return;
         }
 
-        if (rc_stream_timer_ != nullptr) {
+        if (rc_stream_timer_ != nullptr && !keyboard_control_active_) {
             rc_stream_timer_->stop();
         }
         sendRcNeutralBestEffort(reason);
@@ -1495,23 +2037,23 @@ private:
     }
 
     void sendRcStreamTick() {
-        if (!sdk_ready_ || critical_command_active_
-            || rc_stream_check_ == nullptr || !rc_stream_check_->isChecked()) {
+        if (!sdk_ready_ || critical_command_active_) {
+            return;
+        }
+
+        if (keyboard_control_active_) {
+            const std::string cmd = buildRcCommandFromKeyboard();
+            updateKeyboardControlPreview();
+            (void)sendRcCommandNoWait(cmd, "keyboard-control");
+            return;
+        }
+
+        if (rc_stream_check_ == nullptr || !rc_stream_check_->isChecked()) {
             return;
         }
 
         const std::string cmd = buildRcCommandFromInputs();
-        const auto rc = client_.sendCommandNoWait(cmd);
-        int a = 0;
-        int b = 0;
-        int c = 0;
-        int d = 0;
-        if (parseRcCommand(cmd, a, b, c, d)) {
-            state_receiver_.recordRcCommandSample(a, b, c, d, "rc-stream", rc);
-        }
-        if (rc != tello::ResponseCode::OK) {
-            appendLog("rc stream tick => " + QString::fromStdString(responseCodeToString(rc)));
-        }
+        (void)sendRcCommandNoWait(cmd, "rc-stream");
     }
 
     void updateStatusLabel() {
@@ -1519,7 +2061,17 @@ private:
             "State: " + QString::fromStdString(connectionStateToString(client_.getConnectionState()))
             + " | SDK: " + QString(sdk_ready_ ? "READY" : "NOT_READY")
             + " | RC_STREAM=" + QString((rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) ? "ON" : "OFF")
+            + " | KEYBOARD=" + QString(keyboard_control_active_ ? "ON" : "OFF")
             + " | speed_setpoint=" + QString::number(speed_spin_ != nullptr ? speed_spin_->value() : 0));
+    }
+
+    void waitWithUiEvents(int duration_ms) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < duration_ms) {
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     bool connectSdk() {
@@ -1533,19 +2085,19 @@ private:
 
         for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
             client_.shutdown();
-            std::this_thread::sleep_for(std::chrono::milliseconds(kRebindPauseMs));
+            waitWithUiEvents(kRebindPauseMs);
 
             const auto init_rc = client_.initialize("192.168.10.1", 8889, 9000);
             appendLog("initialize(attempt=" + QString::number(attempt) + "): "
                       + QString::fromStdString(responseCodeToString(init_rc)));
             if (init_rc != tello::ResponseCode::OK) {
                 const int backoff_ms = 600 + attempt * 400;
-                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                waitWithUiEvents(backoff_ms);
                 continue;
             }
 
             // After power-cycle, the drone can accept Wi-Fi but still be finishing SDK stack startup.
-            std::this_thread::sleep_for(std::chrono::milliseconds(kPostInitSettleMs));
+            waitWithUiEvents(kPostInitSettleMs);
 
             for (int probe = 1; probe <= kSdkProbesPerAttempt; ++probe) {
                 const auto sdk_rc = client_.enterSdkMode();
@@ -1559,6 +2111,7 @@ private:
                         state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
                     }
                     sdk_ready_ = true;
+                    emergency_shutdown_sent_ = false;
                     const auto keepalive_rc = client_.startSdkKeepalive(5000);
                     appendLog("sdk keepalive start => " + QString::fromStdString(responseCodeToString(keepalive_rc)));
                     updateStatusLabel();
@@ -1566,12 +2119,12 @@ private:
                 }
 
                 if (probe < kSdkProbesPerAttempt) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(kSdkProbeGapMs));
+                    waitWithUiEvents(kSdkProbeGapMs);
                 }
             }
 
             const int backoff_ms = 1000 + attempt * 500;
-            std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+            waitWithUiEvents(backoff_ms);
         }
 
         sdk_ready_ = false;
@@ -1583,7 +2136,12 @@ private:
     void disconnectSdk() {
         client_.stopSdkKeepalive();
         auto_refresh_timer_->stop();
-        auto_refresh_check_->setChecked(false);
+        if (keyboard_control_check_ != nullptr && keyboard_control_check_->isChecked()) {
+            QSignalBlocker blocker(keyboard_control_check_);
+            keyboard_control_check_->setChecked(false);
+        }
+        keyboard_control_active_ = false;
+        active_keyboard_keys_.clear();
         if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
             QSignalBlocker blocker(rc_stream_check_);
             rc_stream_check_->setChecked(false);
@@ -1605,22 +2163,34 @@ private:
         return true;
     }
 
+    void performEmergencyShutdownIfConnected(const QString& reason) {
+        if (emergency_shutdown_sent_) {
+            return;
+        }
+
+        const auto state = client_.getConnectionState();
+        const bool connected = sdk_ready_ || state == tello::TelloClient::ConnectionState::CONNECTED;
+        if (!connected) {
+            return;
+        }
+
+        emergency_shutdown_sent_ = true;
+        keyboard_control_active_ = false;
+        active_keyboard_keys_.clear();
+        if (rc_stream_timer_ != nullptr) {
+            rc_stream_timer_->stop();
+        }
+        if (auto_refresh_timer_ != nullptr) {
+            auto_refresh_timer_->stop();
+        }
+
+        appendLog("shutdown safety emergency (" + reason + ")");
+        const auto rc = client_.sendCommandNoWait("emergency");
+        appendLog("emergency on shutdown => " + QString::fromStdString(responseCodeToString(rc)));
+    }
+
     bool openCsv() {
-        const QString path = csv_path_edit_->text().trimmed();
-        if (path.isEmpty()) {
-            appendLog("csv path is empty");
-            return false;
-        }
-
-        if (csv_file_.is_open()) {
-            csv_file_.close();
-        }
-        csv_file_.open(path.toStdString(), std::ios::out | std::ios::trunc);
-        if (!csv_file_.is_open()) {
-            appendLog("failed to open csv: " + path);
-            return false;
-        }
-
+        gui_metrics_rows_.clear();
         metrics_.reset();
         tello::MetricsCollector::ExperimentMetadata metadata{};
         metadata.run_mode = "CONTROL_PANEL";
@@ -1630,14 +2200,105 @@ private:
         metrics_attempt_ = 0;
         last_vision_metrics_csv_tp_ = metrics_started_at_;
         last_metrics_state_packets_valid_ = state_receiver_.getTelemetryStats().packets_valid;
-
-        csv_file_ << metrics_.toCsvHeader() << std::endl;
+        gui_metrics_recording_ = true;
         return true;
     }
 
+    bool isGuiCsvRecording() const {
+        return gui_metrics_recording_;
+    }
+
     void closeCsv() {
-        if (csv_file_.is_open()) {
-            csv_file_.close();
+        gui_metrics_recording_ = false;
+    }
+
+    void startLoggingRecording() {
+        const bool gui_ok = openCsv();
+        state_receiver_.startStateRecording();
+        updateStateRecordingStatusIndicators();
+        appendLog(QString("recording started | gui_csv=%1 | state_recording=ON")
+                      .arg(gui_ok ? "ON" : "FAILED"));
+        writeEventMetricsRow("logging:start");
+    }
+
+    void stopLoggingRecording() {
+        appendLog("recording stopped");
+        writeEventMetricsRow("logging:stop");
+        closeCsv();
+        state_receiver_.stopStateRecording();
+        updateStateRecordingStatusIndicators();
+    }
+
+    void clearLoggingRecording() {
+        const bool was_gui_recording = isGuiCsvRecording();
+        state_receiver_.clearRecordedStateSamples();
+        updateStateRecordingStatusIndicators();
+        if (was_gui_recording) {
+            (void)openCsv();
+        } else {
+            metrics_.reset();
+            metrics_attempt_ = 0;
+        }
+        appendLog("recording cleared");
+        writeEventMetricsRow("logging:clear");
+    }
+
+    void exportGuiMetricsCsv() {
+        const QString path = csv_path_edit_ != nullptr
+            ? csv_path_edit_->text().trimmed()
+            : QString();
+        if (path.isEmpty()) {
+            appendLog("GUI metrics csv path is empty");
+            return;
+        }
+
+        appendLog("GUI metrics csv export requested => " + path);
+        std::ofstream out(path.toStdString(), std::ios::out | std::ios::trunc);
+        if (!out.is_open()) {
+            appendLog("failed to export GUI metrics csv: " + path);
+            return;
+        }
+
+        out << metrics_.toCsvHeader() << '\n';
+        for (const auto& row : gui_metrics_rows_) {
+            out << row << '\n';
+        }
+        appendLog(QString("GUI metrics csv export => OK (%1 rows, %2)")
+                      .arg(static_cast<int>(gui_metrics_rows_.size()))
+                      .arg(path));
+    }
+
+    void exportStateRecordingCsv() {
+        const QString path = state_record_path_edit_ != nullptr
+            ? state_record_path_edit_->text().trimmed()
+            : QString();
+        if (path.isEmpty()) {
+            appendLog("state csv path is empty");
+            return;
+        }
+        const auto rc = state_receiver_.exportRecordedStateCsv(path.toStdString());
+        appendLog(QString("state csv export => %1 (%2)")
+                      .arg(QString::fromStdString(responseCodeToString(rc)))
+                      .arg(path));
+        writeEventMetricsRow("state-csv:export");
+    }
+
+    void exportAllCsvs() {
+        appendLog("CSV export requested");
+        exportGuiMetricsCsv();
+        exportStateRecordingCsv();
+        appendLog("CSV export finished");
+    }
+
+    void updateStateRecordingStatusIndicators() {
+        const bool recording = state_receiver_.isStateRecording();
+        const QString dot_color = recording ? "#2ECC71" : "#EE5858";
+        if (state_record_dot_label_ != nullptr) {
+            state_record_dot_label_->setStyleSheet(
+                QString("QLabel { background-color: %1; border-radius: 6px; }").arg(dot_color));
+        }
+        if (state_record_status_label_ != nullptr) {
+            state_record_status_label_->setText(recording ? "REC ON" : "REC OFF");
         }
     }
 
@@ -1646,7 +2307,20 @@ private:
         int b = 0;
         int c = 0;
         int d = 0;
-        (void)parseRcCommand(buildRcCommandFromInputs(), a, b, c, d);
+        if (keyboard_control_active_) {
+            const RcChannels keyboard_rc = rcChannelsFromKeyboard();
+            a = keyboard_rc.a;
+            b = keyboard_rc.b;
+            c = keyboard_rc.c;
+            d = keyboard_rc.d;
+        } else if (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) {
+            a = last_sent_rc_channels_.a;
+            b = last_sent_rc_channels_.b;
+            c = last_sent_rc_channels_.c;
+            d = last_sent_rc_channels_.d;
+        } else {
+            (void)parseRcCommand(buildRcCommandFromInputs(), a, b, c, d);
+        }
 
         const auto telemetry_stats = state_receiver_.getTelemetryStats();
         const uint64_t state_sequence_delta =
@@ -1666,7 +2340,7 @@ private:
             state_sequence_delta,
             state_receiver_.isRunning());
         metrics_.updateRuntimeContext(
-            rc_stream_timer_ != nullptr && rc_stream_timer_->isActive(),
+            (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) || keyboard_control_active_,
             a,
             b,
             c,
@@ -1697,7 +2371,7 @@ private:
     }
 
     void writeEventMetricsRow(const QString& event) {
-        if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
+        if (!isGuiCsvRecording()) {
             return;
         }
 
@@ -1710,8 +2384,28 @@ private:
         metrics_.setAttempt(metrics_attempt_);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
         metrics_.setEvent(event.toStdString());
+        metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
-        csv_file_ << metrics_.toCsvLine() << std::endl;
+        gui_metrics_rows_.push_back(metrics_.toCsvLine());
+    }
+
+    void writeLogMetricsRow(const QString& timestamp, const QString& message) {
+        if (!isGuiCsvRecording()) {
+            return;
+        }
+
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metrics_started_at_).count();
+
+        ++metrics_attempt_;
+        updateRuntimeMetricsContext();
+        metrics_.setElapsedMs(elapsed_ms);
+        metrics_.setAttempt(metrics_attempt_);
+        metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
+        metrics_.setEvent("log");
+        metrics_.updateLogMessage(timestamp.toStdString(), message.toStdString());
+        metrics_.setLastOutageFailures(client_.getLastOutageFailures());
+        gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 
     void writeCommandMetricsRow(const QString& source,
@@ -1720,7 +2414,7 @@ private:
                                 tello::ResponseCode result,
                                 const QString& response,
                                 const QString& state) {
-        if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
+        if (!isGuiCsvRecording()) {
             return;
         }
 
@@ -1738,13 +2432,14 @@ private:
         metrics_.updateCommandDiagnostics(source.toStdString(), executor_error, executor_attempt_log);
         metrics_.setConnectionState(state.toStdString());
         metrics_.setEvent((QString("command:") + source).toStdString());
+        metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
-        csv_file_ << metrics_.toCsvLine() << std::endl;
+        gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 
 #ifdef TELLO_HAS_FFMPEG
     void writeVisionMetricsRowIfDue() {
-        if (!csv_enabled_->isChecked() || !csv_file_.is_open() || !vision_pipeline_running_) {
+        if (!isGuiCsvRecording() || !vision_pipeline_running_) {
             return;
         }
 
@@ -1778,8 +2473,9 @@ private:
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
         metrics_.setEvent("vision");
+        metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
-        csv_file_ << metrics_.toCsvLine() << std::endl;
+        gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 #endif
 
@@ -1813,6 +2509,13 @@ private:
 
             const bool rc_stream_was_active = rc_stream_timer_ != nullptr && rc_stream_timer_->isActive();
             const bool rc_input_was_nonzero = hasNonZeroRcInput();
+            const bool keyboard_control_was_active = keyboard_control_active_;
+            if (keyboard_control_check_ != nullptr && keyboard_control_check_->isChecked()) {
+                QSignalBlocker blocker(keyboard_control_check_);
+                keyboard_control_check_->setChecked(false);
+            }
+            keyboard_control_active_ = false;
+            active_keyboard_keys_.clear();
             if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
                 QSignalBlocker blocker(rc_stream_check_);
                 rc_stream_check_->setChecked(false);
@@ -1822,7 +2525,7 @@ private:
             }
 
             if (cmd == "takeoff" || cmd == "land") {
-                if (rc_stream_was_active || rc_input_was_nonzero) {
+                if (rc_stream_was_active || rc_input_was_nonzero || keyboard_control_was_active) {
                     setRcSliders(0, 0, 0, 0);
                     const CommandTimingResult neutral = sendRcNeutralBestEffort(QString::fromStdString(cmd));
                     current_neutral_rc_ms_ = neutral.elapsed_ms;
@@ -1899,11 +2602,8 @@ private:
             constexpr int kCriticalResumeDelayMs = 1500;
             if (was_auto_refresh_active && sdk_ready_ && cmd != "emergency") {
                 QTimer::singleShot(kCriticalResumeDelayMs, this, [this]() {
-                    if (sdk_ready_ && auto_refresh_check_ != nullptr && auto_refresh_check_->isChecked()
-                        && auto_refresh_timer_ != nullptr && !auto_refresh_timer_->isActive()) {
-                        auto_refresh_timer_->start(auto_refresh_interval_ms_ != nullptr
-                                                       ? auto_refresh_interval_ms_->value()
-                                                       : 1000);
+                    if (sdk_ready_ && auto_refresh_timer_ != nullptr && !auto_refresh_timer_->isActive()) {
+                        auto_refresh_timer_->start(1000);
                         appendLog("auto-refresh resumed");
                         writeEventMetricsRow("auto-refresh:resumed");
                         updateStatusLabel();
@@ -1929,22 +2629,34 @@ private:
 
     tello::TelloClient client_;
     bool sdk_ready_ = false;
+    bool emergency_shutdown_sent_ = false;
 
     QLabel* status_label_ = nullptr;
     QLabel* wifi_quality_label_ = nullptr;
     QLabel* battery_status_label_ = nullptr;
     QTextEdit* log_view_ = nullptr;
 
-    QCheckBox* auto_refresh_check_ = nullptr;
-    QSpinBox* auto_refresh_interval_ms_ = nullptr;
     QTimer* auto_refresh_timer_ = nullptr;
     QCheckBox* rc_stream_check_ = nullptr;
     QSpinBox* rc_stream_interval_ms_ = nullptr;
     QTimer* rc_stream_timer_ = nullptr;
+    QCheckBox* keyboard_control_check_ = nullptr;
+    QLabel* keyboard_control_profile_label_ = nullptr;
+    QLabel* keyboard_control_vector_label_ = nullptr;
     QTimer* state_view_timer_ = nullptr;
     QTimer* vision_view_timer_ = nullptr;
-    QComboBox* panel_selector_ = nullptr;
-    QStackedWidget* panel_stack_ = nullptr;
+    QTabWidget* panel_tabs_ = nullptr;
+
+    std::vector<ControlProfile> control_profiles_;
+    int active_control_profile_index_ = 0;
+    QComboBox* control_profile_combo_ = nullptr;
+    QLineEdit* control_profile_name_edit_ = nullptr;
+    QComboBox* control_profile_input_combo_ = nullptr;
+    QSpinBox* control_profile_aggression_spin_ = nullptr;
+    std::map<QString, QKeySequenceEdit*> control_key_edits_;
+    bool keyboard_control_active_ = false;
+    std::set<int> active_keyboard_keys_;
+    RcChannels last_sent_rc_channels_;
 
     tello::StateReceiver state_receiver_;
     QSpinBox* state_buffer_capacity_spin_ = nullptr;
@@ -1952,6 +2664,8 @@ private:
     QLineEdit* state_record_path_edit_ = nullptr;
     QLabel* state_buffer_info_label_ = nullptr;
     QLabel* state_record_info_label_ = nullptr;
+    QLabel* state_record_dot_label_ = nullptr;
+    QLabel* state_record_status_label_ = nullptr;
     StatePlotWidget* state_plot_widget_ = nullptr;
 
     QLabel* vision_frame_label_ = nullptr;
@@ -2008,9 +2722,9 @@ private:
     std::atomic<uint64_t> ui_frames_dropped_{0};
     std::atomic<uint64_t> ui_frames_displayed_{0};
 
-    QCheckBox* csv_enabled_ = nullptr;
     QLineEdit* csv_path_edit_ = nullptr;
-    std::ofstream csv_file_;
+    bool gui_metrics_recording_ = false;
+    std::vector<std::string> gui_metrics_rows_;
     tello::MetricsCollector metrics_;
     std::chrono::steady_clock::time_point metrics_started_at_;
     uint64_t metrics_attempt_ = 0;
@@ -2074,6 +2788,12 @@ int main(int argc, char* argv[]) {
               << std::endl;
 
     ControlPanelWidget panel;
+    std::signal(SIGINT, [](int) {
+        QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
+    });
+    std::signal(SIGTERM, [](int) {
+        QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
+    });
     panel.show();
     panel.showNormal();
     panel.raise();

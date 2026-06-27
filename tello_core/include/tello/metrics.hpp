@@ -82,6 +82,8 @@ public:
         std::string recovery_stage;
         bool recovery_command_channel_available = false;
         std::string event;
+        std::string log_timestamp;
+        std::string log_message;
         std::string connection_state;
         int32_t last_outage_failures = 0;
         std::string plot_metric;
@@ -193,6 +195,9 @@ public:
 
     /// Store latest high-level event label for CSV export.
     void setEvent(const std::string& event);
+
+    /// Store latest GUI log message and wall-clock timestamp.
+    void updateLogMessage(const std::string& timestamp, const std::string& message);
 
     /// Store latest connection state label for CSV export.
     void setConnectionState(const std::string& state);

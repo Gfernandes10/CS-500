@@ -61,6 +61,9 @@ Expected result:
 | E-VIDEO-CLI | video-cli-diagnostic | `tello_cli --video-watch` | 180s | Keep | video quality without GUI |
 | E-LINK-DIST | link-distance-diagnostic | `tello_control_panel` or CLI | 2-3 min | New | quality near/far and orientation sensitivity |
 | E-RC-QUALITY | rc-stream-quality | `tello_control_panel` | manual | New/Safety-gated | command/telemetry quality while RC stream is active |
+| E-KBD-NEUTRAL | keyboard-neutral-safety | `tello_control_panel` | manual | New/Safety-gated | keyboard release sends neutral RC |
+| E-KBD-RESPONSE | keyboard-response-latency | `tello_control_panel` | manual | New/Safety-gated | key press to telemetry motion response |
+| E-KBD-PROFILE | keyboard-profile-validation | `tello_control_panel` | manual | New | profile save/load and key mapping correctness |
 | E-WIFI-LOSS | wifi-reconnect | `tello_cli --watch` | manual | Keep | command recovery and outage failures |
 | E-VID-RESET | stream-reset | `tello_cli --video-watch` | manual | Conditional | video stream recovery without power-cycle |
 | E-PWR-CYCLE | power-cycle | `tello_cli --video-watch` | manual | Keep | hard recovery after drone restart |
@@ -74,7 +77,10 @@ Run this smaller set first when validating network/environment/driver effects:
 3. `E-GUI-VID-IDLE` for 180 seconds with the control panel open, video enabled, and no movement.
 4. `E-GUI-MOVE` for 180 seconds, with movement starting near the 60-second mark.
 5. `E-LINK-DIST` if quality drops appear linked to position, distance, or orientation.
-6. `E-RC-QUALITY` only after the no-flight diagnostics are stable and the area is safe.
+6. `E-KBD-PROFILE` without takeoff to validate profile persistence and mapping.
+7. `E-KBD-NEUTRAL` only after the no-flight diagnostics are stable and the area is safe.
+8. `E-KBD-RESPONSE` only in a safe flight area, after neutral behavior has been confirmed.
+9. `E-RC-QUALITY` if you want to compare keyboard RC against slider-based RC streaming.
 
 `E-GUI-TEL-IDLE` is useful only when you need to separate state-only GUI behavior from video-enabled GUI behavior. `E-GUI-PLOT` is useful only if freezes appear immediately after changing the plot metric. `E-VID-RESET` is useful only when you can interrupt the video stream without restarting the drone; a drone restart belongs to `E-PWR-CYCLE`.
 
@@ -637,6 +643,152 @@ Run this test only when the flight area is clear and you are ready to send neutr
 2. `telemetry_quality` and `video_quality` remain comparable to `E-GUI-VID-IDLE`.
 3. Command failures do not spike while the RC stream is active.
 4. If quality degrades only during RC stream, tune RC send rate and command scheduling before integrating a controller.
+
+## E-KBD-PROFILE - Keyboard Profile Validation
+
+### Purpose
+
+Validate that keyboard control profiles can be created, edited, saved, reloaded, and mapped to the expected RC axes before any flight test.
+
+This is a no-flight configuration test. It should be run before `E-KBD-NEUTRAL` and `E-KBD-RESPONSE`.
+
+### Real Drone Steps
+
+1. Power on Tello and connect the computer to Tello Wi-Fi.
+2. Start the control panel.
+3. Click `Connect + SDK`.
+4. Enable CSV export and choose:
+```text
+../results/E-KBD-PROFILE-001.csv
+```
+5. In the Config panel, create a profile named `KeyboardTest`.
+6. Set RC aggression to `20`.
+7. Map keys to actions, for example:
+   - `W` -> up,
+   - `S` -> down,
+   - `Up` -> forward,
+   - `Down` -> back,
+   - `Left` -> yaw left,
+   - `Right` -> yaw right,
+   - `A` -> left,
+   - `D` -> right.
+8. Save the profile.
+9. Close and reopen the control panel.
+10. Confirm that `KeyboardTest` and its mappings were restored.
+11. Do not take off during this experiment.
+
+### Commands Sent to Drone
+
+1. `command`
+2. optional `rc 0 0 0 0` when keyboard control is disabled
+
+### Success Criteria
+
+1. `control_profiles.json` exists after saving the profile.
+2. The profile reloads with the same name, aggression value, and key bindings.
+3. No non-neutral RC command is sent unless keyboard control is explicitly enabled.
+
+## E-KBD-NEUTRAL - Keyboard Neutral Safety
+
+### Purpose
+
+Verify that keyboard control always returns to neutral RC when no mapped key is pressed.
+
+This is the most important safety experiment for the keyboard feature. The expected behavior is continuous `rc 0 0 0 0` after all mapped keys are released.
+
+### Safety
+
+Run this test with the drone on the ground first. If you repeat it in flight, use very small aggression values and stay ready to send `land` or `emergency`.
+
+### Real Drone Steps
+
+1. Power on Tello and connect the computer to Tello Wi-Fi.
+2. Start the control panel.
+3. Click `Connect + SDK`.
+4. Enable CSV export and choose:
+```text
+../results/E-KBD-NEUTRAL-001.csv
+```
+5. Start state recording and choose:
+```text
+../results/E-KBD-NEUTRAL-001-state.csv
+```
+6. Select the keyboard profile to test.
+7. Set aggression to `20` or lower.
+8. Enable keyboard RC control in the Operation panel.
+9. Press and hold one mapped key for 1-2 seconds.
+10. Release the key and wait 3 seconds.
+11. Repeat for each mapped direction.
+12. Disable keyboard RC control.
+13. Stop and export state recording.
+
+### Commands Sent to Drone
+
+1. `command`
+2. repeated `rc a b c d` while keyboard control is enabled
+3. repeated `rc 0 0 0 0` when no mapped key is pressed
+
+### Success Criteria
+
+1. State recording includes `keyboard-control` RC samples while mapped keys are pressed.
+2. After each key release, RC samples return to `0,0,0,0`.
+3. CSV includes `keyboard-control:on:<profile>` and `keyboard-control:off` events.
+4. `telemetry_quality` remains comparable to `E-GUI-VID-IDLE`.
+5. No drift continues after key release during the optional flight repeat.
+
+## E-KBD-RESPONSE - Keyboard Response Latency
+
+### Purpose
+
+Estimate the delay between a keyboard RC input and the drone's observed physical response in telemetry.
+
+`rc` commands are sent without waiting for a normal SDK response, so this experiment measures command-to-telemetry reaction time instead of command-response latency. Use `vgz` for up/down response, `yaw` for yaw response, and `vgx`/`vgy` for horizontal response if the flight area is large enough.
+
+### Safety
+
+Run only in a clear indoor area with enough space. Use low aggression first, such as `20`. Keep the movement windows short and return to neutral after every input.
+
+### Real Drone Steps
+
+1. Power on Tello and connect the computer to Tello Wi-Fi.
+2. Start the control panel.
+3. Click `Connect + SDK`.
+4. Enable CSV export and choose:
+```text
+../results/E-KBD-RESPONSE-001.csv
+```
+5. Start state recording and choose:
+```text
+../results/E-KBD-RESPONSE-001-state.csv
+```
+6. Select the keyboard profile to test and set aggression to `20`.
+7. Click `takeoff`.
+8. Enable keyboard RC control.
+9. Run short input pulses:
+   - hold `W` for 500 ms, release, wait 3 seconds,
+   - hold `S` for 500 ms, release, wait 3 seconds,
+   - hold yaw left for 500 ms, release, wait 3 seconds,
+   - hold yaw right for 500 ms, release, wait 3 seconds.
+10. Disable keyboard RC control.
+11. Click `land`.
+12. Stop and export state recording.
+
+### Commands Sent to Drone
+
+1. `command`
+2. `takeoff`
+3. repeated keyboard-generated `rc a b c d`
+4. repeated `rc 0 0 0 0` after key release
+5. `land`
+
+### Success Criteria
+
+1. Each key press appears as a `keyboard-control` RC sample in the state recording.
+2. For up/down pulses, `vgz` changes shortly after the RC sample.
+3. For yaw pulses, `yaw` changes shortly after the RC sample.
+4. The estimated response delay is stable across repeated pulses.
+5. `telemetry_quality` remains `OK` or only briefly `DEGRADED` during the test.
+6. After key release, the telemetry trend returns toward neutral instead of continuing indefinitely.
 
 ## E-WIFI-LOSS - Wi-Fi Reconnect
 

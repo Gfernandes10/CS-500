@@ -1,10 +1,10 @@
-Start testing: Jun 26 22:06 EDT
+Start testing: Jun 27 10:38 EDT
 ----------------------------------------------------------
 1/2 Testing: unit_state_parser
 1/2 Test: unit_state_parser
 Command: "/home/gabriel_fernandes/CS 500/tello_core/build/test_state_parser"
 Directory: /home/gabriel_fernandes/CS 500/tello_core/build
-"unit_state_parser" start time: Jun 26 22:06 EDT
+"unit_state_parser" start time: Jun 27 10:38 EDT
 Output:
 ----------------------------------------------------------
 [test_state_parser] PASS
@@ -12,7 +12,7 @@ Output:
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"unit_state_parser" end time: Jun 26 22:06 EDT
+"unit_state_parser" end time: Jun 27 10:38 EDT
 "unit_state_parser" time elapsed: 00:00:00
 ----------------------------------------------------------
 
@@ -20,7 +20,7 @@ Test Passed.
 2/2 Test: unit_metrics_collector
 Command: "/home/gabriel_fernandes/CS 500/tello_core/build/test_metrics_collector"
 Directory: /home/gabriel_fernandes/CS 500/tello_core/build
-"unit_metrics_collector" start time: Jun 26 22:06 EDT
+"unit_metrics_collector" start time: Jun 27 10:38 EDT
 Output:
 ----------------------------------------------------------
 [test_metrics_collector] PASS
@@ -28,11 +28,11 @@ Output:
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"unit_metrics_collector" end time: Jun 26 22:06 EDT
+"unit_metrics_collector" end time: Jun 27 10:38 EDT
 "unit_metrics_collector" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Jun 26 22:06 EDT
+End testing: Jun 27 10:38 EDT
 
 offline =   0.00 sec*proc
 
