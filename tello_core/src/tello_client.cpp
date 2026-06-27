@@ -50,7 +50,12 @@ TelloClient::TelloClient()
     keepalive_mutex_(),
     keepalive_cv_(),
     keepalive_interval_ms_(5000),
-    keepalive_command_("battery?") {}
+    keepalive_command_("battery?"),
+    keepalive_stats_(),
+    has_keepalive_last_success_(false),
+    has_keepalive_last_tick_(false),
+    keepalive_last_success_tp_(std::chrono::steady_clock::now()),
+    keepalive_last_tick_tp_(std::chrono::steady_clock::now()) {}
 
 TelloClient::~TelloClient() {
     shutdown();
@@ -584,6 +589,11 @@ ResponseCode TelloClient::startSdkKeepalive(int32_t interval_ms, const std::stri
         keepalive_interval_ms_ = interval_ms;
         keepalive_command_ = command;
         keepalive_running_ = true;
+        keepalive_stats_ = KeepaliveStats{};
+        keepalive_stats_.running = true;
+        keepalive_stats_.last_command = command;
+        has_keepalive_last_success_ = false;
+        has_keepalive_last_tick_ = false;
     }
 
     keepalive_thread_ = std::thread(&TelloClient::keepaliveLoop, this);
@@ -597,6 +607,7 @@ void TelloClient::stopSdkKeepalive() {
             return;
         }
         keepalive_running_ = false;
+        keepalive_stats_.running = false;
     }
 
     keepalive_cv_.notify_all();
@@ -611,6 +622,23 @@ void TelloClient::stopSdkKeepalive() {
 
 bool TelloClient::isSdkKeepaliveRunning() const {
     return keepalive_running_.load();
+}
+
+TelloClient::KeepaliveStats TelloClient::getSdkKeepaliveStats() const {
+    std::lock_guard<std::mutex> lock(keepalive_mutex_);
+    KeepaliveStats stats = keepalive_stats_;
+    stats.running = keepalive_running_.load();
+
+    const auto now = std::chrono::steady_clock::now();
+    stats.last_success_age_ms = has_keepalive_last_success_
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(
+              now - keepalive_last_success_tp_).count()
+        : -1;
+    stats.last_tick_age_ms = has_keepalive_last_tick_
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(
+              now - keepalive_last_tick_tp_).count()
+        : -1;
+    return stats;
 }
 
 void TelloClient::keepaliveLoop() {
@@ -631,21 +659,53 @@ void TelloClient::keepaliveLoop() {
         }
 
         if (foreground_command_requests_.load() > 0) {
+            std::lock_guard<std::mutex> lock(keepalive_mutex_);
+            ++keepalive_stats_.skipped_busy_total;
             continue;
         }
 
         std::unique_lock<std::recursive_mutex> command_lock(command_mutex_, std::try_to_lock);
         if (!command_lock.owns_lock()) {
+            std::lock_guard<std::mutex> lock(keepalive_mutex_);
+            ++keepalive_stats_.skipped_busy_total;
             continue;
         }
         if (!initialized_ || command_executor_ == nullptr) {
+            std::lock_guard<std::mutex> lock(keepalive_mutex_);
+            ++keepalive_stats_.skipped_uninitialized_total;
             continue;
         }
 
         std::string response;
+        const auto tick_started_at = std::chrono::steady_clock::now();
         const ResponseCode rc = command_executor_->executeCommandWithResponse(command, response);
+        const auto tick_finished_at = std::chrono::steady_clock::now();
+
+        {
+            std::lock_guard<std::mutex> lock(keepalive_mutex_);
+            ++keepalive_stats_.tick_total;
+            keepalive_stats_.last_command = command;
+            keepalive_stats_.last_response = response;
+            keepalive_stats_.last_result = rc;
+            keepalive_stats_.last_latency_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    tick_finished_at - tick_started_at).count();
+            keepalive_last_tick_tp_ = tick_finished_at;
+            has_keepalive_last_tick_ = true;
+
+            if (rc == ResponseCode::OK) {
+                ++keepalive_stats_.success_total;
+                keepalive_last_success_tp_ = tick_finished_at;
+                has_keepalive_last_success_ = true;
+            } else {
+                ++keepalive_stats_.failure_total;
+            }
+        }
+
         if (rc == ResponseCode::OK) {
             markCommandSuccess();
+        } else if (rc != ResponseCode::OK) {
+            markCommandFailure();
         }
     }
 }

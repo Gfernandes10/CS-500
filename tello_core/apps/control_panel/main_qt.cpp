@@ -343,12 +343,19 @@ public:
         status_label_ = new QLabel(this);
         wifi_quality_label_ = new QLabel("wifi: unknown", this);
         battery_status_label_ = new QLabel("battery: --%", this);
+        temperature_status_label_ = new QLabel("temp: --/-- C", this);
+        top_state_record_dot_label_ = new QLabel(this);
+        top_state_record_dot_label_->setFixedSize(12, 12);
+        top_state_record_status_label_ = new QLabel("REC OFF", this);
 
         auto* status_row = new QHBoxLayout();
         status_row->addWidget(status_label_, 1);
         status_row->addStretch(1);
         status_row->addWidget(wifi_quality_label_);
         status_row->addWidget(battery_status_label_);
+        status_row->addWidget(temperature_status_label_);
+        status_row->addWidget(top_state_record_dot_label_);
+        status_row->addWidget(top_state_record_status_label_);
         root->addLayout(status_row);
 
         auto* conn_row = new QHBoxLayout();
@@ -436,6 +443,7 @@ public:
         appendLog("Buttons added for control/set/read command families.");
         appendLog("Keyboard control profiles loaded from control_profiles.json.");
         updateStatusLabel();
+        updateStateRecordingStatusIndicators();
     }
 
     ~ControlPanelWidget() override {
@@ -1376,9 +1384,15 @@ private:
                 std::chrono::steady_clock::now() - history_fetch_started_at).count();
             const auto metric = state_metric_combo_ != nullptr ? state_metric_combo_->currentText() : QString("pitch");
 
-            if (state_receiver_.hasReceivedState() && battery_status_label_ != nullptr) {
+            if (state_receiver_.hasReceivedState()) {
                 const auto latest = state_receiver_.getLatestState();
-                battery_status_label_->setText(QString("battery: %1%").arg(latest.bat));
+                if (battery_status_label_ != nullptr) {
+                    battery_status_label_->setText(QString("battery: %1%").arg(latest.bat));
+                }
+                if (temperature_status_label_ != nullptr) {
+                    temperature_status_label_->setText(
+                        QString("temp: %1/%2 C").arg(latest.templ).arg(latest.temph));
+                }
             }
 
             if (state_plot_widget_ != nullptr) {
@@ -1433,6 +1447,7 @@ private:
         if (vision_pipeline_running_) {
             const auto rx_stats = video_receiver_.getVideoStats();
 
+            ensureSdkKeepaliveRunning("vision");
             maybeRecoverVisionPipeline(rx_stats);
             writeVisionMetricsRowIfDue();
 
@@ -1651,6 +1666,7 @@ private:
         }
 
         writeVisionRecoveryMetricsRow(recovery, rx_stats);
+        ensureSdkKeepaliveRunning("vision-recovery");
         updateStatusLabel();
     }
 
@@ -2163,6 +2179,27 @@ private:
         return true;
     }
 
+    void ensureSdkKeepaliveRunning(const QString& reason) {
+        if (client_.isSdkKeepaliveRunning() || !client_.isInitialized()) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (has_last_keepalive_restart_attempt_) {
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_keepalive_restart_attempt_tp_).count();
+            if (elapsed_ms < 5000) {
+                return;
+            }
+        }
+        has_last_keepalive_restart_attempt_ = true;
+        last_keepalive_restart_attempt_tp_ = now;
+
+        const auto rc = client_.startSdkKeepalive(5000);
+        appendLog("sdk keepalive restart (" + reason + ") => "
+                  + QString::fromStdString(responseCodeToString(rc)));
+    }
+
     void performEmergencyShutdownIfConnected(const QString& reason) {
         if (emergency_shutdown_sent_) {
             return;
@@ -2300,6 +2337,13 @@ private:
         if (state_record_status_label_ != nullptr) {
             state_record_status_label_->setText(recording ? "REC ON" : "REC OFF");
         }
+        if (top_state_record_dot_label_ != nullptr) {
+            top_state_record_dot_label_->setStyleSheet(
+                QString("QLabel { background-color: %1; border-radius: 6px; }").arg(dot_color));
+        }
+        if (top_state_record_status_label_ != nullptr) {
+            top_state_record_status_label_->setText(recording ? "REC ON" : "REC OFF");
+        }
     }
 
     void updateRuntimeMetricsContext() {
@@ -2348,6 +2392,19 @@ private:
             client_.isSdkKeepaliveRunning(),
             auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive(),
             critical_command_active_);
+        const auto keepalive_stats = client_.getSdkKeepaliveStats();
+        metrics_.updateKeepaliveStats(
+            keepalive_stats.tick_total,
+            keepalive_stats.success_total,
+            keepalive_stats.failure_total,
+            keepalive_stats.skipped_busy_total,
+            keepalive_stats.skipped_uninitialized_total,
+            keepalive_stats.last_command,
+            keepalive_stats.last_response,
+            keepalive_stats.last_result,
+            keepalive_stats.last_latency_ms,
+            keepalive_stats.last_success_age_ms,
+            keepalive_stats.last_tick_age_ms);
         metrics_.updateCriticalCommandDurations(
             current_pause_keepalive_ms_,
             current_neutral_rc_ms_,
@@ -2634,6 +2691,9 @@ private:
     QLabel* status_label_ = nullptr;
     QLabel* wifi_quality_label_ = nullptr;
     QLabel* battery_status_label_ = nullptr;
+    QLabel* temperature_status_label_ = nullptr;
+    QLabel* top_state_record_dot_label_ = nullptr;
+    QLabel* top_state_record_status_label_ = nullptr;
     QTextEdit* log_view_ = nullptr;
 
     QTimer* auto_refresh_timer_ = nullptr;
@@ -2703,6 +2763,8 @@ private:
     bool vision_paused_ = false;
     bool vision_overlay_enabled_ = true;
     bool critical_command_active_ = false;
+    bool has_last_keepalive_restart_attempt_ = false;
+    std::chrono::steady_clock::time_point last_keepalive_restart_attempt_tp_;
     int64_t current_pause_keepalive_ms_ = 0;
     int64_t current_neutral_rc_ms_ = 0;
     int64_t current_critical_command_ms_ = 0;

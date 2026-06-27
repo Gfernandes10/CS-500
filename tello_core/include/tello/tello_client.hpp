@@ -40,6 +40,21 @@ public:
         int32_t recovery_backoff_ms = 200;
     };
 
+    struct KeepaliveStats {
+        bool running = false;
+        uint64_t tick_total = 0;
+        uint64_t success_total = 0;
+        uint64_t failure_total = 0;
+        uint64_t skipped_busy_total = 0;
+        uint64_t skipped_uninitialized_total = 0;
+        std::string last_command;
+        std::string last_response;
+        ResponseCode last_result = ResponseCode::ERROR;
+        int64_t last_latency_ms = 0;
+        int64_t last_success_age_ms = -1;
+        int64_t last_tick_age_ms = -1;
+    };
+
     enum class ConnectionState {
         DISCONNECTED = 0,
         RECOVERING = 1,
@@ -129,6 +144,9 @@ public:
     /// Check whether SDK keepalive is currently running.
     bool isSdkKeepaliveRunning() const;
 
+    /// Get diagnostic counters for the background SDK keepalive loop.
+    KeepaliveStats getSdkKeepaliveStats() const;
+
     /// State
     bool isInitialized() const;
     ConnectionState getConnectionState() const;
@@ -177,6 +195,11 @@ private:
     std::condition_variable keepalive_cv_;
     int32_t keepalive_interval_ms_;
     std::string keepalive_command_;
+    KeepaliveStats keepalive_stats_;
+    bool has_keepalive_last_success_;
+    bool has_keepalive_last_tick_;
+    std::chrono::steady_clock::time_point keepalive_last_success_tp_;
+    std::chrono::steady_clock::time_point keepalive_last_tick_tp_;
 };
 
 } // namespace tello

@@ -180,6 +180,8 @@ void MetricsCollector::updateTelemetryState(const TelloState& state, bool availa
         snapshot_.telemetry_baro = 0.0;
         snapshot_.telemetry_vgz = 0;
         snapshot_.telemetry_bat = 0;
+        snapshot_.telemetry_templ = 0;
+        snapshot_.telemetry_temph = 0;
         return;
     }
 
@@ -188,6 +190,8 @@ void MetricsCollector::updateTelemetryState(const TelloState& state, bool availa
     snapshot_.telemetry_baro = state.baro;
     snapshot_.telemetry_vgz = state.vgz;
     snapshot_.telemetry_bat = state.bat;
+    snapshot_.telemetry_templ = state.templ;
+    snapshot_.telemetry_temph = state.temph;
 }
 
 void MetricsCollector::updateVideoReceiverStats(const VideoReceiver::VideoStats& stats) {
@@ -331,6 +335,34 @@ void MetricsCollector::updateRuntimeContext(
     snapshot_.critical_command_active = critical_command_active;
 }
 
+void MetricsCollector::updateKeepaliveStats(
+    uint64_t tick_total,
+    uint64_t success_total,
+    uint64_t failure_total,
+    uint64_t skipped_busy_total,
+    uint64_t skipped_uninitialized_total,
+    const std::string& last_command,
+    const std::string& last_response,
+    ResponseCode last_result,
+    int64_t last_latency_ms,
+    int64_t last_success_age_ms,
+    int64_t last_tick_age_ms
+) {
+    // Keepalive diagnostics show whether the loop is merely running or actually receiving SDK replies.
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.keepalive_tick_total = tick_total;
+    snapshot_.keepalive_success_total = success_total;
+    snapshot_.keepalive_failure_total = failure_total;
+    snapshot_.keepalive_skipped_busy_total = skipped_busy_total;
+    snapshot_.keepalive_skipped_uninitialized_total = skipped_uninitialized_total;
+    snapshot_.keepalive_last_command = last_command;
+    snapshot_.keepalive_last_response = last_response;
+    snapshot_.keepalive_last_result = last_result;
+    snapshot_.keepalive_last_latency_ms = last_latency_ms;
+    snapshot_.keepalive_last_success_age_ms = last_success_age_ms;
+    snapshot_.keepalive_last_tick_age_ms = last_tick_age_ms;
+}
+
 void MetricsCollector::updateCriticalCommandDurations(
     int64_t pause_keepalive_ms,
     int64_t neutral_rc_ms,
@@ -393,7 +425,7 @@ std::string MetricsCollector::toCsvHeader() const {
            "telemetry_interarrival_ms,telemetry_max_interarrival_ms,telemetry_last_gap_ms,telemetry_last_gap_sequence,"
            "telemetry_gap_events_300ms,telemetry_gap_events_500ms,telemetry_gap_events_1000ms,"
            "telemetry_quality,telemetry_quality_score,"
-           "telemetry_state_available,telemetry_h,telemetry_tof,telemetry_baro,telemetry_vgz,telemetry_bat,"
+           "telemetry_state_available,telemetry_h,telemetry_tof,telemetry_baro,telemetry_vgz,telemetry_bat,telemetry_templ,telemetry_temph,"
            "video_packets_total,video_bytes_total,video_timeouts,video_errors,"
            "video_pps_instant,video_pps_ema,video_age_ms,video_packet_delta,"
            "video_interarrival_ms,video_max_interarrival_ms,video_last_gap_ms,video_last_gap_sequence,"
@@ -411,7 +443,11 @@ std::string MetricsCollector::toCsvHeader() const {
            "vision_refresh_duration_ms,state_refresh_duration_ms,"
            "frame_convert_ms,frame_scale_ms,plot_paint_ms,"
            "vision_frame_mutex_wait_ms,state_history_fetch_ms,"
-           "ui_frames_converted,ui_frames_dropped,ui_frames_displayed,plot_samples_displayed";
+           "ui_frames_converted,ui_frames_dropped,ui_frames_displayed,plot_samples_displayed,"
+           "keepalive_tick_total,keepalive_success_total,keepalive_failure_total,"
+           "keepalive_skipped_busy_total,keepalive_skipped_uninitialized_total,"
+           "keepalive_last_command,keepalive_last_response,keepalive_last_result,"
+           "keepalive_last_latency_ms,keepalive_last_success_age_ms,keepalive_last_tick_age_ms";
 }
 
 std::string MetricsCollector::toCsvLine() const {
@@ -460,6 +496,8 @@ std::string MetricsCollector::toCsvLine() const {
         << s.telemetry_baro << ','
         << s.telemetry_vgz << ','
         << s.telemetry_bat << ','
+        << s.telemetry_templ << ','
+        << s.telemetry_temph << ','
         << s.video_rx.packets_total << ','
         << s.video_rx.bytes_total << ','
         << s.video_rx.recv_timeouts << ','
@@ -534,7 +572,18 @@ std::string MetricsCollector::toCsvLine() const {
         << s.ui_frames_converted << ','
         << s.ui_frames_dropped << ','
         << s.ui_frames_displayed << ','
-        << s.plot_samples_displayed;
+        << s.plot_samples_displayed << ','
+        << s.keepalive_tick_total << ','
+        << s.keepalive_success_total << ','
+        << s.keepalive_failure_total << ','
+        << s.keepalive_skipped_busy_total << ','
+        << s.keepalive_skipped_uninitialized_total << ','
+        << csvEscape(s.keepalive_last_command) << ','
+        << csvEscape(s.keepalive_last_response) << ','
+        << responseCodeToString(s.keepalive_last_result) << ','
+        << s.keepalive_last_latency_ms << ','
+        << s.keepalive_last_success_age_ms << ','
+        << s.keepalive_last_tick_age_ms;
     return out.str();
 }
 

@@ -543,7 +543,7 @@ Measure video continuity without Qt rendering or telemetry plotting.
 cd tello_core
 ./build/tello_cli --video-watch \
   --interval-ms 1000 \
-  --duration-s 180 \
+  --duration-s 120 \
   --metrics-csv ../results/E-VIDEO-CLI-001.csv \
   --test-id E-VIDEO-CLI-001 \
   --scenario video-cli-diagnostic \
@@ -584,7 +584,7 @@ Measure whether telemetry/video quality changes with distance, orientation, or r
 cd tello_core
 ./build/tello_cli --video-watch \
   --interval-ms 1000 \
-  --duration-s 180 \
+  --duration-s 120 \
   --metrics-csv ../results/E-LINK-DIST-001.csv \
   --test-id E-LINK-DIST-001 \
   --scenario link-distance-diagnostic \

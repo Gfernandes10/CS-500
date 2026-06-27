@@ -286,6 +286,10 @@ int main(int argc, char** argv) {
             return 3;
         }
 
+        const tello::ResponseCode keepalive_rc = client.startSdkKeepalive(5000);
+        std::cout << "[tello_cli] sdk_keepalive: " << responseCodeToString(keepalive_rc)
+                  << " (battery? every 5000 ms)" << std::endl;
+
         const tello::ResponseCode stream_on_rc = client.streamOn();
         std::cout << "[tello_cli] streamOn: " << responseCodeToString(stream_on_rc) << std::endl;
         if (stream_on_rc != tello::ResponseCode::OK) {
@@ -366,6 +370,16 @@ int main(int argc, char** argv) {
             return 5;
         }
 
+        tello::StateReceiver state_receiver;
+        const tello::ResponseCode state_start_rc = state_receiver.start("0.0.0.0", 8890, 500);
+        std::cout << "[tello_cli] state_receiver.start: " << responseCodeToString(state_start_rc) << std::endl;
+        if (state_start_rc != tello::ResponseCode::OK) {
+            receiver.stop();
+            (void)client.streamOff();
+            client.shutdown();
+            return 5;
+        }
+
         uint64_t last_count = 0;
         const int64_t stall_age_threshold_ms = std::max<int64_t>(3000, static_cast<int64_t>(options.interval_ms) * 3);
         const int64_t recovery_cooldown_ms = 3000;
@@ -397,6 +411,10 @@ int main(int argc, char** argv) {
 
             const tello::VideoReceiver::VideoStats stats = receiver.getVideoStats();
             const tello::VideoStreamAssembler::Stats assembler_stats = assembler.getStats();
+            const tello::StateReceiver::TelemetryStats telemetry_stats = state_receiver.getTelemetryStats();
+            const bool telemetry_available = state_receiver.hasReceivedState();
+            const tello::TelloState telemetry_state =
+                telemetry_available ? state_receiver.getLatestState() : tello::TelloState{};
             const uint64_t count = stats.packets_total;
             const uint64_t delta = count - last_count;
 
@@ -421,6 +439,18 @@ int main(int argc, char** argv) {
                       << " nal_gated=" << nal_decode_gated.load()
                       << " parser_resyncs=" << assembler_stats.parse_resyncs
                       << " buffered_bytes=" << assembler_stats.buffered_bytes
+                      << " | state_age_ms=" << telemetry_stats.last_packet_age_ms
+                      << " state_hz=" << telemetry_stats.rx_hz_ema;
+            if (telemetry_available) {
+                std::cout << " bat=" << telemetry_state.bat
+                          << " templ=" << telemetry_state.templ
+                          << " temph=" << telemetry_state.temph
+                          << " h=" << telemetry_state.h
+                          << " tof=" << telemetry_state.tof;
+            } else {
+                std::cout << " state=waiting";
+            }
+            std::cout
 #ifdef TELLO_HAS_FFMPEG
                       << " dec_frames=" << decoder_stats.frames_decoded
                       << " dec_fps=" << decoder_stats.decode_fps_ema
@@ -502,6 +532,8 @@ int main(int argc, char** argv) {
 
                 metrics.setElapsedMs(elapsed_ms);
                 metrics.setAttempt(static_cast<uint64_t>(attempt));
+                metrics.updateTelemetryStats(telemetry_stats);
+                metrics.updateTelemetryState(telemetry_state, telemetry_available);
                 metrics.updateVideoReceiverStats(stats);
                 metrics.setVideoPacketDelta(delta);
                 metrics.updateVideoAssemblerStats(assembler_stats);
@@ -523,6 +555,28 @@ int main(int argc, char** argv) {
                     recovery.used_hard_recovery,
                     recovery.stage,
                     recovery.command_channel_available);
+                metrics.updateRuntimeContext(
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    client.isSdkKeepaliveRunning(),
+                    false,
+                    false);
+                const auto keepalive_stats = client.getSdkKeepaliveStats();
+                metrics.updateKeepaliveStats(
+                    keepalive_stats.tick_total,
+                    keepalive_stats.success_total,
+                    keepalive_stats.failure_total,
+                    keepalive_stats.skipped_busy_total,
+                    keepalive_stats.skipped_uninitialized_total,
+                    keepalive_stats.last_command,
+                    keepalive_stats.last_response,
+                    keepalive_stats.last_result,
+                    keepalive_stats.last_latency_ms,
+                    keepalive_stats.last_success_age_ms,
+                    keepalive_stats.last_tick_age_ms);
                 metrics.setEvent(event_str);
                 metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
                 metrics.setLastOutageFailures(client.getLastOutageFailures());
@@ -532,6 +586,7 @@ int main(int argc, char** argv) {
             last_count = count;
         }
 
+        state_receiver.stop();
         receiver.stop();
         const tello::ResponseCode stream_off_rc = client.streamOff();
         std::cout << "[tello_cli] streamOff: " << responseCodeToString(stream_off_rc) << std::endl;
@@ -565,6 +620,11 @@ int main(int argc, char** argv) {
         // Entering SDK mode once improves chance of receiving telemetry state packets.
         const tello::ResponseCode sdk_rc = client.enterSdkMode();
         std::cout << "[tello_cli] enterSdkMode(command): " << responseCodeToString(sdk_rc) << std::endl;
+        if (sdk_rc == tello::ResponseCode::OK) {
+            const tello::ResponseCode keepalive_rc = client.startSdkKeepalive(5000);
+            std::cout << "[tello_cli] sdk_keepalive: " << responseCodeToString(keepalive_rc)
+                      << " (battery? every 5000 ms)" << std::endl;
+        }
 
         tello::StateReceiver receiver;
         const tello::ResponseCode state_start_rc = receiver.start("0.0.0.0", 8890, 500);
@@ -593,6 +653,7 @@ int main(int argc, char** argv) {
                           << std::endl;
             }
 
+            constexpr int64_t kCliStateStaleThresholdMs = 1000;
             if (!receiver.hasReceivedState()) {
                 std::cout << "[tello_cli] attempt=" << attempt
                           << " state: waiting packets..."
@@ -602,7 +663,9 @@ int main(int argc, char** argv) {
             } else {
                 const tello::TelloState s = receiver.getLatestState();
                 std::cout << "[tello_cli] attempt=" << attempt
-                          << " state:"
+                          << (stats.last_packet_age_ms > kCliStateStaleThresholdMs
+                                  ? " state: STALE latest"
+                                  : " state:")
                           << " bat=" << s.bat
                           << " h=" << s.h
                           << " pitch=" << s.pitch
@@ -631,6 +694,28 @@ int main(int argc, char** argv) {
                 metrics.setElapsedMs(elapsed_ms);
                 metrics.setAttempt(static_cast<uint64_t>(attempt));
                 metrics.updateTelemetryStats(stats);
+                metrics.updateRuntimeContext(
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    client.isSdkKeepaliveRunning(),
+                    false,
+                    false);
+                const auto keepalive_stats = client.getSdkKeepaliveStats();
+                metrics.updateKeepaliveStats(
+                    keepalive_stats.tick_total,
+                    keepalive_stats.success_total,
+                    keepalive_stats.failure_total,
+                    keepalive_stats.skipped_busy_total,
+                    keepalive_stats.skipped_uninitialized_total,
+                    keepalive_stats.last_command,
+                    keepalive_stats.last_response,
+                    keepalive_stats.last_result,
+                    keepalive_stats.last_latency_ms,
+                    keepalive_stats.last_success_age_ms,
+                    keepalive_stats.last_tick_age_ms);
                 metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
                 metrics.setEvent(event_str);
                 metrics.setLastOutageFailures(client.getLastOutageFailures());

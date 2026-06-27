@@ -4,16 +4,16 @@
             "aggression": 20,
             "input_type": "keyboard",
             "key_bindings": {
-                "back": 16777237,
-                "down": 83,
-                "forward": 16777235,
+                "back": 83,
+                "down": 16777237,
+                "forward": 87,
                 "left": 65,
                 "right": 68,
-                "up": 87,
+                "up": 16777235,
                 "yaw_left": 16777234,
                 "yaw_right": 16777236
             },
-            "name": "Default"
+            "name": "KeyboardTest"
         }
     ],
     "version": 1

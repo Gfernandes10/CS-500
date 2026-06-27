@@ -57,6 +57,8 @@ public:
         double telemetry_baro = 0.0;
         int32_t telemetry_vgz = 0;
         int32_t telemetry_bat = 0;
+        int32_t telemetry_templ = 0;
+        int32_t telemetry_temph = 0;
         VideoReceiver::VideoStats video_rx;
         std::string video_quality = "NO_DATA";
         int32_t video_quality_score = 0;
@@ -96,6 +98,17 @@ public:
         int32_t rc_up_down = 0;
         int32_t rc_yaw = 0;
         bool keepalive_running = false;
+        uint64_t keepalive_tick_total = 0;
+        uint64_t keepalive_success_total = 0;
+        uint64_t keepalive_failure_total = 0;
+        uint64_t keepalive_skipped_busy_total = 0;
+        uint64_t keepalive_skipped_uninitialized_total = 0;
+        std::string keepalive_last_command;
+        std::string keepalive_last_response;
+        ResponseCode keepalive_last_result = ResponseCode::ERROR;
+        int64_t keepalive_last_latency_ms = 0;
+        int64_t keepalive_last_success_age_ms = -1;
+        int64_t keepalive_last_tick_age_ms = -1;
         bool auto_refresh_active = false;
         bool critical_command_active = false;
         int64_t pause_keepalive_ms = 0;
@@ -222,6 +235,21 @@ public:
         bool keepalive_running,
         bool auto_refresh_active,
         bool critical_command_active
+    );
+
+    /// Store background SDK keepalive diagnostics.
+    void updateKeepaliveStats(
+        uint64_t tick_total,
+        uint64_t success_total,
+        uint64_t failure_total,
+        uint64_t skipped_busy_total,
+        uint64_t skipped_uninitialized_total,
+        const std::string& last_command,
+        const std::string& last_response,
+        ResponseCode last_result,
+        int64_t last_latency_ms,
+        int64_t last_success_age_ms,
+        int64_t last_tick_age_ms
     );
 
     /// Store timing breakdown for critical-command preflight and execution.
