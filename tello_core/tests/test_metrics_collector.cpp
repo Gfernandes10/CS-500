@@ -1,0 +1,170 @@
+#include "tello/metrics.hpp"
+
+#include <cmath>
+#include <iostream>
+#include <string>
+
+namespace {
+
+bool expect(bool condition, const std::string& message) {
+    if (!condition) {
+        std::cerr << "[test_metrics_collector] FAIL: " << message << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool expectNear(double actual, double expected, const std::string& message) {
+    return expect(std::fabs(actual - expected) < 0.0001, message);
+}
+
+size_t countCsvColumns(const std::string& row) {
+    bool in_quotes = false;
+    size_t columns = 1;
+
+    for (size_t i = 0; i < row.size(); ++i) {
+        const char c = row[i];
+        if (c == '"') {
+            if (in_quotes && i + 1 < row.size() && row[i + 1] == '"') {
+                ++i;
+            } else {
+                in_quotes = !in_quotes;
+            }
+        } else if (c == ',' && !in_quotes) {
+            ++columns;
+        }
+    }
+
+    return row.empty() ? 0 : columns;
+}
+
+} // namespace
+
+int main() {
+    tello::MetricsCollector metrics;
+    bool ok = true;
+
+    // Case 1: command result aggregation tracks counts and latency stats.
+    metrics.recordCommandResult("command", 120.0, tello::ResponseCode::OK, "ok");
+    metrics.recordCommandResult("battery?", 80.0, tello::ResponseCode::OK, "87");
+    metrics.recordCommandResult("speed?", 200.0, tello::ResponseCode::TIMEOUT, "");
+
+    auto snapshot = metrics.getSnapshot();
+    ok &= expect(snapshot.command_samples == 3, "command sample count should be 3");
+    ok &= expect(snapshot.command_successes == 2, "command success count should be 2");
+    ok &= expect(snapshot.command_failures == 1, "command failure count should be 1");
+    ok &= expectNear(snapshot.command_latency_ms_avg, 400.0 / 3.0, "average command latency should match");
+    ok &= expectNear(snapshot.command_latency_ms_min, 80.0, "minimum command latency should match");
+    ok &= expectNear(snapshot.command_latency_ms_max, 200.0, "maximum command latency should match");
+    ok &= expect(snapshot.last_command == "speed?", "last command should be preserved");
+    ok &= expect(snapshot.last_command_result == tello::ResponseCode::TIMEOUT, "last command result should be preserved");
+
+    // Case 2: subsystem snapshots are copied into the central metrics snapshot.
+    tello::StateReceiver::TelemetryStats telemetry{};
+    telemetry.packets_total = 10;
+    telemetry.packets_valid = 9;
+    telemetry.packets_invalid = 1;
+    telemetry.recv_timeouts = 2;
+    telemetry.rx_hz_ema = 29.5;
+    telemetry.last_packet_age_ms = 15;
+    telemetry.last_interarrival_ms = 33;
+    metrics.updateTelemetryStats(telemetry);
+
+    tello::VideoReceiver::VideoStats video{};
+    video.packets_total = 100;
+    video.bytes_total = 4096;
+    video.recv_errors = 3;
+    video.rx_pps_ema = 120.25;
+    video.last_packet_age_ms = 10;
+    video.last_interarrival_ms = 4;
+    metrics.updateVideoReceiverStats(video);
+    metrics.setVideoPacketDelta(12);
+
+    tello::VideoStreamAssembler::Stats nal{};
+    nal.packets_in = 100;
+    nal.nal_units_out = 42;
+    nal.buffered_bytes = 7;
+    metrics.updateVideoAssemblerStats(nal);
+    metrics.updateNalClassificationStats(2, 2, 1, 37, 0, 4);
+
+    tello::VideoDecoderFfmpeg::Stats decoder{};
+    decoder.nals_in = 42;
+    decoder.frames_decoded = 30;
+    decoder.decode_errors = 1;
+    decoder.decode_fps_ema = 28.75;
+    metrics.updateDecoderStats(decoder);
+
+    metrics.updateFrameInfo(960, 720, true);
+    metrics.updateDisplayState(true, false);
+    metrics.updatePanelDiagnostics("tof", 3, true);
+    metrics.updateGuiPerformance(120, 250, 5, 3, 2, 4, 1, 0, 1, 8, 24, 7, 120);
+    metrics.recordRecoveryEvent(true, tello::ResponseCode::OK, true);
+    metrics.setConnectionState("CONNECTED");
+    metrics.setEvent("stream_restored");
+    metrics.setAttempt(4);
+    metrics.setLastOutageFailures(2);
+
+    snapshot = metrics.getSnapshot();
+    ok &= expect(snapshot.telemetry.packets_total == 10, "telemetry stats should be copied");
+    ok &= expect(snapshot.telemetry_quality == "OK", "fresh telemetry should be marked OK");
+    ok &= expect(snapshot.telemetry_quality_score == 100, "fresh telemetry quality score should be 100");
+    ok &= expect(snapshot.video_rx.bytes_total == 4096, "video receiver stats should be copied");
+    ok &= expect(snapshot.video_quality == "OK", "fresh video should be marked OK");
+    ok &= expect(snapshot.video_quality_score == 100, "fresh video quality score should be 100");
+    ok &= expect(snapshot.video_packet_delta == 12, "video packet delta should be stored");
+    ok &= expect(snapshot.nal.nal_units_out == 42, "NAL stats should be copied");
+    ok &= expect(snapshot.nal_sps == 2, "NAL SPS count should be stored");
+    ok &= expect(snapshot.nal_pps == 2, "NAL PPS count should be stored");
+    ok &= expect(snapshot.nal_idr == 1, "NAL IDR count should be stored");
+    ok &= expect(snapshot.nal_non_idr == 37, "NAL non-IDR count should be stored");
+    ok &= expect(snapshot.nal_decode_gated == 4, "NAL gated count should be stored");
+    ok &= expect(snapshot.decoder.frames_decoded == 30, "decoder stats should be copied");
+    ok &= expect(snapshot.frame_width == 960 && snapshot.frame_height == 720, "frame size should be stored");
+    ok &= expect(snapshot.keyframes == 1, "keyframe count should increment");
+    ok &= expect(snapshot.paused, "paused display state should be stored");
+    ok &= expect(!snapshot.overlay_enabled, "overlay display state should be stored");
+    ok &= expect(snapshot.plot_metric == "tof", "plot metric should be stored");
+    ok &= expect(snapshot.state_sequence_delta == 3, "state sequence delta should be stored");
+    ok &= expect(snapshot.state_receiver_running, "state receiver running flag should be stored");
+    ok &= expect(snapshot.gui_vision_tick_delay_ms == 120, "GUI vision tick delay should be stored");
+    ok &= expect(snapshot.frame_scale_ms == 4, "frame scale duration should be stored");
+    ok &= expect(snapshot.ui_frames_dropped == 24, "UI dropped frame count should be stored");
+    ok &= expect(snapshot.plot_samples_displayed == 120, "plot sample count should be stored");
+    ok &= expect(snapshot.recovery_attempted, "recovery attempted flag should be stored");
+    ok &= expect(snapshot.recovery_hard, "hard recovery flag should be stored");
+    ok &= expect(snapshot.connection_state == "CONNECTED", "connection state should be stored");
+    ok &= expect(snapshot.attempt == 4, "attempt should be stored");
+    ok &= expect(snapshot.last_outage_failures == 2, "last outage failure count should be stored");
+
+    // Case 3: CSV header and row stay aligned even when text fields need escaping.
+    tello::MetricsCollector::ExperimentMetadata metadata{};
+    metadata.test_id = "E5-001";
+    metadata.scenario = "baseline";
+    metadata.notes = "note, with comma and \"quote\"";
+    metadata.run_mode = "unit";
+    metrics.setExperimentMetadata(metadata);
+    metrics.setElapsedMs(1234);
+
+    const std::string header = metrics.toCsvHeader();
+    const std::string row = metrics.toCsvLine();
+    ok &= expect(countCsvColumns(header) == countCsvColumns(row), "CSV header and row column counts should match");
+    ok &= expect(row.find("\"note, with comma and \"\"quote\"\"\"") != std::string::npos,
+                 "CSV row should escape quoted text fields");
+
+    // Case 4: reset returns the collector to an empty snapshot.
+    metrics.reset();
+    snapshot = metrics.getSnapshot();
+    ok &= expect(snapshot.command_samples == 0, "reset should clear command samples");
+    ok &= expect(snapshot.telemetry.packets_total == 0, "reset should clear telemetry stats");
+    ok &= expect(snapshot.telemetry_quality == "NO_DATA", "reset should clear telemetry quality");
+    ok &= expect(snapshot.video_rx.packets_total == 0, "reset should clear video stats");
+    ok &= expect(snapshot.video_quality == "NO_DATA", "reset should clear video quality");
+    ok &= expect(snapshot.keyframes == 0, "reset should clear keyframe count");
+
+    if (!ok) {
+        return 1;
+    }
+
+    std::cout << "[test_metrics_collector] PASS" << std::endl;
+    return 0;
+}

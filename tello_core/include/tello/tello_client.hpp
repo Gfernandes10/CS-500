@@ -6,9 +6,13 @@
 #include "command_executor.hpp"
 #include "logger.hpp"
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace tello {
 
@@ -22,6 +26,8 @@ public:
         bool attempted = false;
         ResponseCode result = ResponseCode::OK;
         bool used_hard_recovery = false;
+        std::string stage;
+        bool command_channel_available = false;
     };
 
     struct ReliabilityConfig {
@@ -91,6 +97,10 @@ public:
         int64_t recovery_cooldown_ms
     );
 
+    /// Attempt a full SDK/video recovery after a drone power-cycle.
+    /// Performs one non-blocking-ish sequence: reinitialize, command, battery?, streamon.
+    VideoRecoveryStatus recoverAfterPowerCycle();
+
     /// Read commands
     ResponseCode getBattery(std::string& response);
     ResponseCode getSpeed(std::string& response);
@@ -101,6 +111,23 @@ public:
     /// Generic command interfaces
     ResponseCode sendCommand(const std::string& command);
     ResponseCode sendCommandWithResponse(const std::string& command, std::string& response);
+    /// Send a command without waiting for an SDK response.
+    /// Intended for high-frequency control streams such as continuous rc.
+    ResponseCode sendCommandNoWait(const std::string& command);
+
+    /// Start a background SDK keepalive command loop.
+    /// This is useful for GUI/ROS/API users that may keep SDK mode open without
+    /// sending frequent commands. The loop sends a lightweight query command.
+    ResponseCode startSdkKeepalive(
+        int32_t interval_ms = 5000,
+        const std::string& command = "battery?"
+    );
+
+    /// Stop the background SDK keepalive loop if it is running.
+    void stopSdkKeepalive();
+
+    /// Check whether SDK keepalive is currently running.
+    bool isSdkKeepaliveRunning() const;
 
     /// State
     bool isInitialized() const;
@@ -123,9 +150,11 @@ private:
     ResponseCode openCommandChannel();
     ResponseCode ensureSdkMode();
     ResponseCode recoverCommandSession();
+    void keepaliveLoop();
     void markCommandSuccess();
     void markCommandFailure();
 
+    mutable std::recursive_mutex command_mutex_;
     bool initialized_;
     bool sdk_mode_confirmed_;
     int32_t consecutive_failures_;
@@ -140,6 +169,14 @@ private:
     bool has_last_video_recovery_attempt_;
     std::shared_ptr<UdpSocket> command_socket_;
     std::shared_ptr<CommandExecutor> command_executor_;
+
+    std::atomic<int32_t> foreground_command_requests_;
+    std::atomic<bool> keepalive_running_;
+    std::thread keepalive_thread_;
+    mutable std::mutex keepalive_mutex_;
+    std::condition_variable keepalive_cv_;
+    int32_t keepalive_interval_ms_;
+    std::string keepalive_command_;
 };
 
 } // namespace tello

@@ -44,6 +44,10 @@ public:
     /// @return ResponseCode::OK if successful, error otherwise.
     ResponseCode executeCommandWithResponse(const std::string& command, std::string& response);
 
+    /// Execute a command once and capture the response string.
+    /// This is intended for non-idempotent commands such as takeoff/land.
+    ResponseCode executeCommandWithResponseSingleAttempt(const std::string& command, std::string& response);
+
     /// Get the last response received (useful for debugging).
     /// @return Last response string.
     std::string getLastResponse() const;
@@ -51,6 +55,10 @@ public:
     /// Get the last error message (if any).
     /// @return Last error message.
     std::string getLastError() const;
+
+    /// Get a compact diagnostic trace for the latest command attempts.
+    /// @return Semicolon-separated attempt diagnostics.
+    std::string getLastAttemptLog() const;
 
     /// Check if the last response indicates success.
     /// @return True if response is "ok", false otherwise.
@@ -66,6 +74,7 @@ private:
     RetryConfig retry_config_;              ///< Current retry configuration
     std::string last_response_;             ///< Last response received
     std::string last_error_;                ///< Last error message
+    std::string last_attempt_log_;          ///< Compact latest attempt diagnostics
 
     /// Parse response and determine if it indicates success.
     /// @param response Raw response string.
@@ -76,6 +85,9 @@ private:
     /// @param command Command to validate.
     /// @return ResponseCode::OK if valid, error otherwise.
     ResponseCode validateCommand(const std::string& command);
+
+    /// Internal no-wait send with optional diagnostic reset.
+    ResponseCode sendCommandNoWaitImpl(const std::string& command, bool reset_diagnostics);
 };
 
 } // namespace tello

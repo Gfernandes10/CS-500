@@ -1,6 +1,8 @@
 #include "tello/tello_client.hpp"
+#include "tello/metrics.hpp"
 #include "tello/state_receiver.hpp"
 #include "tello/video_decoder_ffmpeg.hpp"
+#include "tello/video_pipeline_recovery.hpp"
 #include "tello/video_receiver.hpp"
 #include "tello/video_stream_assembler.hpp"
 
@@ -74,13 +76,6 @@ QString nowClockString() {
     return QDateTime::currentDateTime().toString("HH:mm:ss");
 }
 
-QString sanitizeCsvField(QString s) {
-    s.replace(',', ';');
-    s.replace('\n', ';');
-    s.replace('\r', ';');
-    return s;
-}
-
 QString wifiQualityLabel(const QString& raw) {
     bool ok = false;
     const int v = raw.trimmed().toInt(&ok);
@@ -94,6 +89,10 @@ QString wifiQualityLabel(const QString& raw) {
         return QString("wifi: medium (snr=%1)").arg(v);
     }
     return QString("wifi: weak (snr=%1)").arg(v);
+}
+
+bool isCriticalFlightCommand(const std::string& cmd) {
+    return cmd == "takeoff" || cmd == "land" || cmd == "emergency";
 }
 
 double metricFromState(const tello::TelloState& s, const QString& metric) {
@@ -120,13 +119,34 @@ public:
     }
 
     void setSamples(std::vector<tello::StateReceiver::StateSample> samples, QString metric) {
-        samples_ = std::move(samples);
+        constexpr size_t kMaxPlotSamples = 300;
+        if (samples.size() > kMaxPlotSamples) {
+            std::vector<tello::StateReceiver::StateSample> downsampled;
+            downsampled.reserve(kMaxPlotSamples);
+            for (size_t i = 0; i < kMaxPlotSamples; ++i) {
+                const size_t idx = (i * (samples.size() - 1)) / (kMaxPlotSamples - 1);
+                downsampled.push_back(samples[idx]);
+            }
+            samples_ = std::move(downsampled);
+        } else {
+            samples_ = std::move(samples);
+        }
         metric_ = std::move(metric);
+        plotted_samples_count_ = samples_.size();
         update();
+    }
+
+    int64_t lastPaintDurationMs() const {
+        return last_paint_duration_ms_;
+    }
+
+    size_t plottedSamplesCount() const {
+        return plotted_samples_count_;
     }
 
 protected:
     void paintEvent(QPaintEvent* event) override {
+        const auto paint_started_at = std::chrono::steady_clock::now();
         QWidget::paintEvent(event);
 
         QPainter p(this);
@@ -139,6 +159,8 @@ protected:
         if (samples_.size() < 2) {
             p.setPen(QPen(Qt::lightGray));
             p.drawText(plot_rect, Qt::AlignCenter, "Waiting telemetry...");
+            last_paint_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - paint_started_at).count();
             return;
         }
 
@@ -155,6 +177,8 @@ protected:
         }
 
         if (!std::isfinite(y_min) || !std::isfinite(y_max)) {
+            last_paint_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - paint_started_at).count();
             return;
         }
 
@@ -212,11 +236,16 @@ protected:
         p.drawText(QPointF(plot_rect.left(), rect().bottom() - 6), "t=0");
         p.drawText(QPointF(plot_rect.right() - 80, rect().bottom() - 6),
                    QString("t=%1 ms").arg(t1 - t0));
+
+        last_paint_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - paint_started_at).count();
     }
 
 private:
     std::vector<tello::StateReceiver::StateSample> samples_;
     QString metric_ = "pitch";
+    int64_t last_paint_duration_ms_ = 0;
+    size_t plotted_samples_count_ = 0;
 };
 
 class ControlPanelWidget final : public QWidget {
@@ -293,7 +322,7 @@ public:
         connect(disconnect_btn, &QPushButton::clicked, this, [this]() { disconnectSdk(); });
 
         connect(auto_refresh_timer_, &QTimer::timeout, this, [this]() {
-            if (!sdk_ready_) {
+            if (!sdk_ready_ || critical_command_active_) {
                 return;
             }
             runReadCommand("battery?", "auto");
@@ -330,6 +359,12 @@ public:
     }
 
 private:
+    struct CommandTimingResult {
+        tello::ResponseCode rc = tello::ResponseCode::ERROR;
+        QString response;
+        int64_t elapsed_ms = 0;
+    };
+
     void buildReadGroup(QVBoxLayout* root) {
         auto* g = new QGroupBox("Read Commands", this);
         auto* l = new QHBoxLayout(g);
@@ -684,6 +719,11 @@ private:
             appendLog(QString("state buffer size set to %1").arg(state_buffer_capacity_spin_->value()));
         });
 
+        connect(state_metric_combo_, &QComboBox::currentTextChanged, this, [this](const QString& metric) {
+            appendLog("plot metric changed => " + metric);
+            writeEventMetricsRow("plot_metric_changed:" + metric);
+        });
+
         connect(start_rec_btn, &QPushButton::clicked, this, [this]() {
             state_receiver_.startStateRecording();
             appendLog("state recording started");
@@ -803,10 +843,21 @@ private:
     }
 
     void refreshStateHistoryView() {
+        const auto tick_started_at = std::chrono::steady_clock::now();
+        if (has_last_state_gui_tick_) {
+            last_gui_state_tick_delay_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                tick_started_at - last_state_gui_tick_tp_).count();
+        }
+        last_state_gui_tick_tp_ = tick_started_at;
+        has_last_state_gui_tick_ = true;
+
         if (state_receiver_.isRunning()) {
+            const auto history_fetch_started_at = std::chrono::steady_clock::now();
             const auto buffered = state_receiver_.getBufferedStateSamples();
-            const auto recorded = state_receiver_.getRecordedStateSamples();
-            const auto rc_recorded = state_receiver_.getRecordedRcCommandSamples();
+            const auto recorded_count = state_receiver_.getRecordedStateSampleCount();
+            const auto rc_recorded_count = state_receiver_.getRecordedRcCommandSampleCount();
+            last_state_history_fetch_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - history_fetch_started_at).count();
             const auto metric = state_metric_combo_ != nullptr ? state_metric_combo_->currentText() : QString("pitch");
 
             if (state_receiver_.hasReceivedState() && battery_status_label_ != nullptr) {
@@ -828,8 +879,8 @@ private:
             if (state_record_info_label_ != nullptr) {
                 state_record_info_label_->setText(
                     QString("recorded=%1 | rc=%2 | %3")
-                        .arg(static_cast<int>(recorded.size()))
-                        .arg(static_cast<int>(rc_recorded.size()))
+                        .arg(static_cast<int>(recorded_count))
+                        .arg(static_cast<int>(rc_recorded_count))
                         .arg(state_receiver_.isStateRecording() ? "REC ON" : "REC OFF"));
             }
         } else {
@@ -838,13 +889,24 @@ private:
             }
             if (state_record_info_label_ != nullptr) {
                 state_record_info_label_->setText(
-                    state_receiver_.isStateRecording() ? "recording pending (receiver offline)" : "recorded=0");
+                state_receiver_.isStateRecording() ? "recording pending (receiver offline)" : "recorded=0");
             }
         }
+
+        last_state_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tick_started_at).count();
     }
 
     void refreshVisionView() {
 #ifdef TELLO_HAS_FFMPEG
+        const auto tick_started_at = std::chrono::steady_clock::now();
+        if (has_last_vision_gui_tick_) {
+            last_gui_vision_tick_delay_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                tick_started_at - last_vision_gui_tick_tp_).count();
+        }
+        last_vision_gui_tick_tp_ = tick_started_at;
+        has_last_vision_gui_tick_ = true;
+
         if (vision_status_label_ != nullptr) {
             vision_status_label_->setText(
                 QString("status: %1 | %2")
@@ -854,21 +916,26 @@ private:
 
         if (vision_pipeline_running_) {
             const auto rx_stats = video_receiver_.getVideoStats();
-            const auto nal_stats = video_assembler_.getStats();
-            const auto dec_stats = video_decoder_.getStats();
+
+            maybeRecoverVisionPipeline(rx_stats);
+            writeVisionMetricsRowIfDue();
+
+            const auto refreshed_rx_stats = video_receiver_.getVideoStats();
+            const auto refreshed_nal_stats = video_assembler_.getStats();
+            const auto refreshed_dec_stats = video_decoder_.getStats();
 
             if (vision_rx_label_ != nullptr) {
                 vision_rx_label_->setText(QString("rx packets: %1 (ema=%2 pps)")
-                                              .arg(static_cast<qulonglong>(rx_stats.packets_total))
-                                              .arg(rx_stats.rx_pps_ema, 0, 'f', 1));
+                                              .arg(static_cast<qulonglong>(refreshed_rx_stats.packets_total))
+                                              .arg(refreshed_rx_stats.rx_pps_ema, 0, 'f', 1));
             }
             if (vision_nal_label_ != nullptr) {
                 vision_nal_label_->setText(QString("nal units: %1")
-                                               .arg(static_cast<qulonglong>(nal_stats.nal_units_out)));
+                                               .arg(static_cast<qulonglong>(refreshed_nal_stats.nal_units_out)));
             }
             if (vision_fps_label_ != nullptr) {
                 vision_fps_label_->setText(QString("decode fps: %1")
-                                               .arg(dec_stats.decode_fps_ema, 0, 'f', 2));
+                                               .arg(refreshed_dec_stats.decode_fps_ema, 0, 'f', 2));
             }
             if (vision_size_label_ != nullptr) {
                 vision_size_label_->setText(QString("size: %1x%2")
@@ -877,26 +944,39 @@ private:
             }
             if (vision_decode_err_label_ != nullptr) {
                 vision_decode_err_label_->setText(QString("decode errors: %1")
-                                                      .arg(static_cast<qulonglong>(dec_stats.decode_errors)));
+                                                      .arg(static_cast<qulonglong>(refreshed_dec_stats.decode_errors)));
             }
             if (vision_frame_info_label_ != nullptr) {
                 vision_frame_info_label_->setText(
                     QString("frames: %1 | keyframes: %2")
-                        .arg(static_cast<qulonglong>(dec_stats.frames_decoded))
+                        .arg(static_cast<qulonglong>(refreshed_dec_stats.frames_decoded))
                         .arg(static_cast<qulonglong>(vision_keyframes_.load())));
             }
         }
 
         QImage frame_to_show;
+        uint64_t frame_sequence = 0;
+        const auto mutex_wait_started_at = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            last_vision_frame_mutex_wait_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - mutex_wait_started_at).count();
             frame_to_show = vision_paused_ ? vision_paused_frame_ : vision_latest_frame_;
+            frame_sequence = vision_latest_frame_sequence_.load();
         }
 
         if (frame_to_show.isNull()) {
             if (vision_frame_label_ != nullptr && !vision_pipeline_running_) {
                 vision_frame_label_->setText("Vision not started");
             }
+            last_vision_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tick_started_at).count();
+            return;
+        }
+
+        if (!vision_paused_ && frame_sequence == vision_displayed_frame_sequence_) {
+            last_vision_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tick_started_at).count();
             return;
         }
 
@@ -922,9 +1002,16 @@ private:
         }
 
         if (vision_frame_label_ != nullptr) {
+            const auto scale_started_at = std::chrono::steady_clock::now();
             vision_frame_label_->setPixmap(QPixmap::fromImage(composed).scaled(
                 vision_frame_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            last_frame_scale_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - scale_started_at).count();
+            vision_displayed_frame_sequence_ = frame_sequence;
+            ui_frames_displayed_.fetch_add(1);
         }
+        last_vision_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tick_started_at).count();
 #else
         if (vision_status_label_ != nullptr) {
             vision_status_label_->setText("status: FFmpeg backend not available");
@@ -933,13 +1020,133 @@ private:
     }
 
 #ifdef TELLO_HAS_FFMPEG
+    void resetVisionRuntimeStateForRestart() {
+        video_decoder_seen_sps_.store(false);
+        video_decoder_seen_pps_.store(false);
+        video_decoder_synced_.store(false);
+        vision_keyframes_.store(0);
+        vision_frame_width_.store(0);
+        vision_frame_height_.store(0);
+        last_vision_metrics_packets_ = 0;
+        vision_latest_frame_sequence_.store(0);
+        vision_displayed_frame_sequence_ = 0;
+        vision_last_ui_frame_convert_ms_.store(0);
+        ui_frames_converted_.store(0);
+        ui_frames_dropped_.store(0);
+        ui_frames_displayed_.store(0);
+
+        {
+            std::lock_guard<std::mutex> lock(vision_frame_mutex_);
+            vision_latest_frame_ = QImage();
+            vision_paused_frame_ = QImage();
+        }
+
+        vision_paused_ = false;
+        if (vision_pause_btn_ != nullptr) {
+            vision_pause_btn_->setText("Pause");
+        }
+    }
+
+    void writeVisionRecoveryMetricsRow(
+        const tello::VideoPipelineRecoveryResult& recovery,
+        const tello::VideoReceiver::VideoStats& rx_stats) {
+        if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
+            return;
+        }
+
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metrics_started_at_).count();
+        const auto nal_stats = video_assembler_.getStats();
+        const auto dec_stats = video_decoder_.getStats();
+
+        ++metrics_attempt_;
+        updateRuntimeMetricsContext();
+        metrics_.setElapsedMs(elapsed_ms);
+        metrics_.setAttempt(metrics_attempt_);
+        metrics_.updateVideoReceiverStats(rx_stats);
+        metrics_.setVideoPacketDelta(0);
+        metrics_.updateVideoAssemblerStats(nal_stats);
+        metrics_.updateDecoderStats(dec_stats);
+        metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
+        metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
+        metrics_.recordRecoveryEvent(
+            recovery.session.attempted,
+            recovery.session.result,
+            recovery.session.used_hard_recovery,
+            recovery.session.stage,
+            recovery.session.command_channel_available);
+        metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
+        metrics_.setEvent(recovery.power_cycle_recovery_used ? "vision_recovery:power_cycle" : "vision_recovery");
+        metrics_.setLastOutageFailures(client_.getLastOutageFailures());
+        csv_file_ << metrics_.toCsvLine() << std::endl;
+    }
+
+    void maybeRecoverVisionPipeline(const tello::VideoReceiver::VideoStats& rx_stats) {
+        if (!vision_pipeline_running_ || !sdk_ready_) {
+            return;
+        }
+
+        constexpr int64_t kVisionStallThresholdMs = 3000;
+        constexpr int64_t kVisionRecoveryCooldownMs = 3000;
+        tello::VideoPipelineRecoveryOptions options;
+        options.bind_ip = "0.0.0.0";
+        options.video_port = 11111;
+        options.receiver_timeout_ms = 500;
+
+        tello::VideoPipelineRecoveryHooks hooks;
+        hooks.before_restart = [this]() {
+            resetVisionRuntimeStateForRestart();
+        };
+
+        const tello::VideoPipelineRecoveryResult recovery =
+            tello::VideoPipelineRecovery::recoverIfStalled(
+                client_,
+                video_receiver_,
+                video_assembler_,
+                rx_stats.last_packet_age_ms,
+                kVisionStallThresholdMs,
+                kVisionRecoveryCooldownMs,
+                options,
+                hooks,
+                &video_decoder_,
+                nullptr);
+
+        if (!recovery.session.attempted) {
+            return;
+        }
+
+        if (recovery.session.command_channel_available || recovery.session.result == tello::ResponseCode::OK) {
+            sdk_ready_ = true;
+        } else if (recovery.power_cycle_recovery_used) {
+            sdk_ready_ = false;
+        }
+
+        appendLog(QString("vision recovery => %1 | stage=%2 | command_channel=%3 | hard=%4 | video_restart=%5")
+                      .arg(QString::fromStdString(responseCodeToString(recovery.session.result)))
+                      .arg(QString::fromStdString(recovery.session.stage))
+                      .arg(recovery.session.command_channel_available ? "available" : "unavailable")
+                      .arg(recovery.session.used_hard_recovery ? "yes" : "no")
+                      .arg(recovery.video_pipeline_restarted ? "yes" : "no"));
+
+        if (recovery.video_restart_result != tello::ResponseCode::OK) {
+            appendLog("vision local pipeline restart failed => "
+                      + QString::fromStdString(responseCodeToString(recovery.video_restart_result)));
+        }
+
+        writeVisionRecoveryMetricsRow(recovery, rx_stats);
+        updateStatusLabel();
+    }
+
     bool startVisionWithStreamOn() {
         if (!ensureSdkReady()) {
             return false;
         }
 
         std::string response;
+        const auto command_started_at = std::chrono::steady_clock::now();
         const auto rc = client_.sendCommandWithResponse("streamon", response);
+        const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - command_started_at).count();
         const QString rc_q = QString::fromStdString(responseCodeToString(rc));
         const QString response_q = QString::fromStdString(response);
         const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
@@ -950,7 +1157,7 @@ private:
         }
         line += " | state=" + state_q;
         appendLog(line);
-        writeCsvRow("vision", "streamon", rc_q, response_q, state_q);
+        writeCommandMetricsRow("vision", "streamon", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
 
         return startVisionPipeline();
     }
@@ -963,7 +1170,10 @@ private:
         }
 
         std::string response;
+        const auto command_started_at = std::chrono::steady_clock::now();
         const auto rc = client_.sendCommandWithResponse("streamoff", response);
+        const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - command_started_at).count();
         const QString rc_q = QString::fromStdString(responseCodeToString(rc));
         const QString response_q = QString::fromStdString(response);
         const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
@@ -974,7 +1184,7 @@ private:
         }
         line += " | state=" + state_q;
         appendLog(line);
-        writeCsvRow("vision", "streamoff", rc_q, response_q, state_q);
+        writeCommandMetricsRow("vision", "streamoff", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
     }
 
     bool startVisionPipeline() {
@@ -992,6 +1202,13 @@ private:
         vision_keyframes_.store(0);
         vision_frame_width_.store(0);
         vision_frame_height_.store(0);
+        last_vision_metrics_packets_ = 0;
+        vision_latest_frame_sequence_.store(0);
+        vision_displayed_frame_sequence_ = 0;
+        vision_last_ui_frame_convert_ms_.store(0);
+        ui_frames_converted_.store(0);
+        ui_frames_dropped_.store(0);
+        ui_frames_displayed_.store(0);
 
         if (!video_decoder_.initialize()) {
             appendLog("vision start failed: decoder initialize error");
@@ -1012,6 +1229,18 @@ private:
                 return;
             }
 
+            constexpr int64_t kUiFrameMinIntervalMs = 100;
+            const auto now = std::chrono::steady_clock::now();
+            const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()).count();
+            const int64_t previous_ms = vision_last_ui_frame_convert_ms_.load();
+            if (previous_ms > 0 && now_ms - previous_ms < kUiFrameMinIntervalMs) {
+                ui_frames_dropped_.fetch_add(1);
+                return;
+            }
+            vision_last_ui_frame_convert_ms_.store(now_ms);
+
+            const auto convert_started_at = std::chrono::steady_clock::now();
             QImage rgb(frame.info.width, frame.info.height, QImage::Format_RGB888);
             for (int y = 0; y < frame.info.height; ++y) {
                 const uint8_t* src = frame.bgr.data() + (static_cast<size_t>(y) * static_cast<size_t>(frame.bgr_stride));
@@ -1025,12 +1254,16 @@ private:
                     dst[x * 3 + 2] = b;
                 }
             }
+            last_frame_convert_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - convert_started_at).count();
+            ui_frames_converted_.fetch_add(1);
 
             std::lock_guard<std::mutex> lock(vision_frame_mutex_);
             vision_latest_frame_ = rgb;
             if (!vision_paused_) {
                 vision_paused_frame_ = rgb;
             }
+            vision_latest_frame_sequence_.fetch_add(1);
         });
 
         video_assembler_.setNalCallback([this](const std::vector<uint8_t>& nal) {
@@ -1201,20 +1434,46 @@ private:
         }
     }
 
-    void sendRcNeutralBestEffort(const QString& reason) {
+    bool hasNonZeroRcInput() const {
+        return (rc_lr_slider_ != nullptr && rc_lr_slider_->value() != 0)
+            || (rc_fb_slider_ != nullptr && rc_fb_slider_->value() != 0)
+            || (rc_ud_slider_ != nullptr && rc_ud_slider_->value() != 0)
+            || (rc_yaw_slider_ != nullptr && rc_yaw_slider_->value() != 0);
+    }
+
+    CommandTimingResult sendRcNeutralBestEffort(const QString& reason, bool write_metrics_row = true) {
+        CommandTimingResult result;
         if (!sdk_ready_) {
-            return;
+            return result;
         }
 
-        std::string response;
-        const auto rc = client_.sendCommandWithResponse("rc 0 0 0 0", response);
-        state_receiver_.recordRcCommandSample(0, 0, 0, 0, ("rc-neutral-" + reason).toStdString(), rc);
-        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
-        if (rc == tello::ResponseCode::OK) {
-            appendLog("rc stream neutralized (" + reason + ") => " + rc_q);
+        const auto started_at = std::chrono::steady_clock::now();
+        result.rc = client_.sendCommandNoWait("rc 0 0 0 0");
+        result.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at).count();
+        result.response = "no_wait";
+
+        state_receiver_.recordRcCommandSample(0, 0, 0, 0, ("rc-neutral-" + reason).toStdString(), result.rc);
+        const QString rc_q = QString::fromStdString(responseCodeToString(result.rc));
+        if (result.rc == tello::ResponseCode::OK) {
+            appendLog("rc stream neutralized no-wait (" + reason + ") => " + rc_q);
         } else {
-            appendLog("rc stream neutralize failed (" + reason + ") => " + rc_q);
+            appendLog("rc stream neutralize no-wait failed (" + reason + ") => " + rc_q);
         }
+
+        if (write_metrics_row) {
+            const int64_t previous_neutral_rc_ms = current_neutral_rc_ms_;
+            current_neutral_rc_ms_ = result.elapsed_ms;
+            writeCommandMetricsRow(
+                "preflight",
+                "rc 0 0 0 0",
+                static_cast<double>(result.elapsed_ms),
+                result.rc,
+                result.response,
+                QString::fromStdString(connectionStateToString(client_.getConnectionState())));
+            current_neutral_rc_ms_ = previous_neutral_rc_ms;
+        }
+        return result;
     }
 
     void setRcStreamingEnabled(bool enabled, const QString& reason) {
@@ -1223,6 +1482,7 @@ private:
                 rc_stream_timer_->start(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50);
             }
             appendLog(QString("continuous RC ON (%1 ms)").arg(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50));
+            writeEventMetricsRow(QString("rc-stream:on:") + reason);
             return;
         }
 
@@ -1230,16 +1490,18 @@ private:
             rc_stream_timer_->stop();
         }
         sendRcNeutralBestEffort(reason);
+        appendLog("continuous RC OFF (" + reason + ")");
+        writeEventMetricsRow(QString("rc-stream:off:") + reason);
     }
 
     void sendRcStreamTick() {
-        if (!sdk_ready_ || rc_stream_check_ == nullptr || !rc_stream_check_->isChecked()) {
+        if (!sdk_ready_ || critical_command_active_
+            || rc_stream_check_ == nullptr || !rc_stream_check_->isChecked()) {
             return;
         }
 
-        std::string response;
         const std::string cmd = buildRcCommandFromInputs();
-        const auto rc = client_.sendCommandWithResponse(cmd, response);
+        const auto rc = client_.sendCommandNoWait(cmd);
         int a = 0;
         int b = 0;
         int c = 0;
@@ -1297,6 +1559,8 @@ private:
                         state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
                     }
                     sdk_ready_ = true;
+                    const auto keepalive_rc = client_.startSdkKeepalive(5000);
+                    appendLog("sdk keepalive start => " + QString::fromStdString(responseCodeToString(keepalive_rc)));
                     updateStatusLabel();
                     return true;
                 }
@@ -1317,6 +1581,7 @@ private:
     }
 
     void disconnectSdk() {
+        client_.stopSdkKeepalive();
         auto_refresh_timer_->stop();
         auto_refresh_check_->setChecked(false);
         if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
@@ -1356,7 +1621,17 @@ private:
             return false;
         }
 
-        csv_file_ << "timestamp,source,command,result,response,cmd_state" << std::endl;
+        metrics_.reset();
+        tello::MetricsCollector::ExperimentMetadata metadata{};
+        metadata.run_mode = "CONTROL_PANEL";
+        metadata.scenario = "gui";
+        metrics_.setExperimentMetadata(metadata);
+        metrics_started_at_ = std::chrono::steady_clock::now();
+        metrics_attempt_ = 0;
+        last_vision_metrics_csv_tp_ = metrics_started_at_;
+        last_metrics_state_packets_valid_ = state_receiver_.getTelemetryStats().packets_valid;
+
+        csv_file_ << metrics_.toCsvHeader() << std::endl;
         return true;
     }
 
@@ -1366,25 +1641,147 @@ private:
         }
     }
 
-    void writeCsvRow(const QString& source,
-                     const QString& command,
-                     const QString& result,
-                     const QString& response,
-                     const QString& state) {
+    void updateRuntimeMetricsContext() {
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        int d = 0;
+        (void)parseRcCommand(buildRcCommandFromInputs(), a, b, c, d);
+
+        const auto telemetry_stats = state_receiver_.getTelemetryStats();
+        const uint64_t state_sequence_delta =
+            telemetry_stats.packets_valid >= last_metrics_state_packets_valid_
+                ? telemetry_stats.packets_valid - last_metrics_state_packets_valid_
+                : 0;
+        last_metrics_state_packets_valid_ = telemetry_stats.packets_valid;
+
+        metrics_.updateTelemetryStats(telemetry_stats);
+        if (state_receiver_.hasReceivedState()) {
+            metrics_.updateTelemetryState(state_receiver_.getLatestState(), true);
+        } else {
+            metrics_.updateTelemetryState(tello::TelloState{}, false);
+        }
+        metrics_.updatePanelDiagnostics(
+            state_metric_combo_ != nullptr ? state_metric_combo_->currentText().toStdString() : "",
+            state_sequence_delta,
+            state_receiver_.isRunning());
+        metrics_.updateRuntimeContext(
+            rc_stream_timer_ != nullptr && rc_stream_timer_->isActive(),
+            a,
+            b,
+            c,
+            d,
+            client_.isSdkKeepaliveRunning(),
+            auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive(),
+            critical_command_active_);
+        metrics_.updateCriticalCommandDurations(
+            current_pause_keepalive_ms_,
+            current_neutral_rc_ms_,
+            current_critical_command_ms_);
+        metrics_.updateGuiPerformance(
+            last_gui_vision_tick_delay_ms_,
+            last_gui_state_tick_delay_ms_,
+            last_vision_refresh_duration_ms_,
+            last_state_refresh_duration_ms_,
+            last_frame_convert_ms_.load(),
+            last_frame_scale_ms_,
+            state_plot_widget_ != nullptr ? state_plot_widget_->lastPaintDurationMs() : 0,
+            last_vision_frame_mutex_wait_ms_,
+            last_state_history_fetch_ms_,
+            ui_frames_converted_.load(),
+            ui_frames_dropped_.load(),
+            ui_frames_displayed_.load(),
+            state_plot_widget_ != nullptr
+                ? static_cast<uint64_t>(state_plot_widget_->plottedSamplesCount())
+                : 0);
+    }
+
+    void writeEventMetricsRow(const QString& event) {
         if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
             return;
         }
 
-        const QString ts = QDateTime::currentDateTime().toString(Qt::ISODate);
-        csv_file_
-            << sanitizeCsvField(ts).toStdString() << ","
-            << sanitizeCsvField(source).toStdString() << ","
-            << sanitizeCsvField(command).toStdString() << ","
-            << sanitizeCsvField(result).toStdString() << ","
-            << sanitizeCsvField(response).toStdString() << ","
-            << sanitizeCsvField(state).toStdString()
-            << std::endl;
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metrics_started_at_).count();
+
+        ++metrics_attempt_;
+        updateRuntimeMetricsContext();
+        metrics_.setElapsedMs(elapsed_ms);
+        metrics_.setAttempt(metrics_attempt_);
+        metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
+        metrics_.setEvent(event.toStdString());
+        metrics_.setLastOutageFailures(client_.getLastOutageFailures());
+        csv_file_ << metrics_.toCsvLine() << std::endl;
     }
+
+    void writeCommandMetricsRow(const QString& source,
+                                const QString& command,
+                                double latency_ms,
+                                tello::ResponseCode result,
+                                const QString& response,
+                                const QString& state) {
+        if (!csv_enabled_->isChecked() || !csv_file_.is_open()) {
+            return;
+        }
+
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metrics_started_at_).count();
+
+        ++metrics_attempt_;
+        updateRuntimeMetricsContext();
+        metrics_.setElapsedMs(elapsed_ms);
+        metrics_.setAttempt(metrics_attempt_);
+        metrics_.recordCommandResult(command.toStdString(), latency_ms, result, response.toStdString());
+        const auto executor = client_.getCommandExecutor();
+        const std::string executor_error = executor != nullptr ? executor->getLastError() : "";
+        const std::string executor_attempt_log = executor != nullptr ? executor->getLastAttemptLog() : "";
+        metrics_.updateCommandDiagnostics(source.toStdString(), executor_error, executor_attempt_log);
+        metrics_.setConnectionState(state.toStdString());
+        metrics_.setEvent((QString("command:") + source).toStdString());
+        metrics_.setLastOutageFailures(client_.getLastOutageFailures());
+        csv_file_ << metrics_.toCsvLine() << std::endl;
+    }
+
+#ifdef TELLO_HAS_FFMPEG
+    void writeVisionMetricsRowIfDue() {
+        if (!csv_enabled_->isChecked() || !csv_file_.is_open() || !vision_pipeline_running_) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto since_last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_vision_metrics_csv_tp_).count();
+        if (since_last_ms < 1000) {
+            return;
+        }
+
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - metrics_started_at_).count();
+        const auto rx_stats = video_receiver_.getVideoStats();
+        const auto nal_stats = video_assembler_.getStats();
+        const auto dec_stats = video_decoder_.getStats();
+
+        const uint64_t packets_total = rx_stats.packets_total;
+        const uint64_t delta = packets_total - last_vision_metrics_packets_;
+        last_vision_metrics_packets_ = packets_total;
+        last_vision_metrics_csv_tp_ = now;
+
+        ++metrics_attempt_;
+        updateRuntimeMetricsContext();
+        metrics_.setElapsedMs(elapsed_ms);
+        metrics_.setAttempt(metrics_attempt_);
+        metrics_.updateVideoReceiverStats(rx_stats);
+        metrics_.setVideoPacketDelta(delta);
+        metrics_.updateVideoAssemblerStats(nal_stats);
+        metrics_.updateDecoderStats(dec_stats);
+        metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
+        metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
+        metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
+        metrics_.setEvent("vision");
+        metrics_.setLastOutageFailures(client_.getLastOutageFailures());
+        csv_file_ << metrics_.toCsvLine() << std::endl;
+    }
+#endif
 
     void runReadCommand(const std::string& cmd, const QString& source) {
         runCommandWithResponse(cmd, source);
@@ -1399,15 +1796,72 @@ private:
             return;
         }
 
-        std::string response;
-        const auto rc = client_.sendCommandWithResponse(cmd, response);
+        const bool critical = isCriticalFlightCommand(cmd);
+        const bool was_auto_refresh_active = auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive();
+        if (critical) {
+            current_pause_keepalive_ms_ = 0;
+            current_neutral_rc_ms_ = 0;
+            current_critical_command_ms_ = 0;
+            critical_command_active_ = true;
+            writeEventMetricsRow(QString("critical-command:begin:") + QString::fromStdString(cmd));
 
-        int a = 0;
-        int b = 0;
-        int c = 0;
-        int d = 0;
-        if (parseRcCommand(cmd, a, b, c, d)) {
-            state_receiver_.recordRcCommandSample(a, b, c, d, source.toStdString(), rc);
+            if (auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive()) {
+                auto_refresh_timer_->stop();
+                appendLog("auto-refresh paused for " + QString::fromStdString(cmd));
+            }
+            appendLog("sdk keepalive remains running; cooperative loop skips ticks while command channel is busy");
+
+            const bool rc_stream_was_active = rc_stream_timer_ != nullptr && rc_stream_timer_->isActive();
+            const bool rc_input_was_nonzero = hasNonZeroRcInput();
+            if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
+                QSignalBlocker blocker(rc_stream_check_);
+                rc_stream_check_->setChecked(false);
+            }
+            if (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) {
+                rc_stream_timer_->stop();
+            }
+
+            if (cmd == "takeoff" || cmd == "land") {
+                if (rc_stream_was_active || rc_input_was_nonzero) {
+                    setRcSliders(0, 0, 0, 0);
+                    const CommandTimingResult neutral = sendRcNeutralBestEffort(QString::fromStdString(cmd));
+                    current_neutral_rc_ms_ = neutral.elapsed_ms;
+                } else {
+                    appendLog("rc neutral preflight skipped (" + QString::fromStdString(cmd)
+                              + "): RC stream was inactive and sliders were already zero");
+                    writeEventMetricsRow(QString("rc-neutral:skipped:") + QString::fromStdString(cmd));
+                }
+            } else {
+                appendLog("continuous RC stopped for emergency");
+                writeEventMetricsRow("rc-stream:off:emergency");
+            }
+        }
+
+        std::string response;
+        const auto command_started_at = std::chrono::steady_clock::now();
+        int parsed_rc_a = 0;
+        int parsed_rc_b = 0;
+        int parsed_rc_c = 0;
+        int parsed_rc_d = 0;
+        const bool is_rc_command = parseRcCommand(cmd, parsed_rc_a, parsed_rc_b, parsed_rc_c, parsed_rc_d);
+        const auto rc = is_rc_command
+            ? client_.sendCommandNoWait(cmd)
+            : client_.sendCommandWithResponse(cmd, response);
+        const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - command_started_at).count();
+        if (critical) {
+            current_critical_command_ms_ = command_elapsed_ms;
+        }
+
+        if (is_rc_command) {
+            response = "no_wait";
+            state_receiver_.recordRcCommandSample(
+                parsed_rc_a,
+                parsed_rc_b,
+                parsed_rc_c,
+                parsed_rc_d,
+                source.toStdString(),
+                rc);
         }
 
         const QString rc_q = QString::fromStdString(responseCodeToString(rc));
@@ -1420,12 +1874,46 @@ private:
         }
         line += " | state=" + state_q;
         appendLog(line);
+        if (critical && rc == tello::ResponseCode::ERROR) {
+            appendLog(QString::fromStdString(cmd)
+                      + " returned ERROR, but control-command ERROR can be ambiguous on Tello UDP; "
+                        "the next safety command is not blocked by this result.");
+        }
 
         if (cmd == "wifi?") {
             wifi_quality_label_->setText(wifiQualityLabel(response_q));
         }
 
-        writeCsvRow(source, QString::fromStdString(cmd), rc_q, response_q, state_q);
+        writeCommandMetricsRow(
+            source,
+            QString::fromStdString(cmd),
+            static_cast<double>(command_elapsed_ms),
+            rc,
+            response_q,
+            state_q);
+
+        if (critical) {
+            writeEventMetricsRow(QString("critical-command:end:") + QString::fromStdString(cmd));
+            critical_command_active_ = false;
+
+            constexpr int kCriticalResumeDelayMs = 1500;
+            if (was_auto_refresh_active && sdk_ready_ && cmd != "emergency") {
+                QTimer::singleShot(kCriticalResumeDelayMs, this, [this]() {
+                    if (sdk_ready_ && auto_refresh_check_ != nullptr && auto_refresh_check_->isChecked()
+                        && auto_refresh_timer_ != nullptr && !auto_refresh_timer_->isActive()) {
+                        auto_refresh_timer_->start(auto_refresh_interval_ms_ != nullptr
+                                                       ? auto_refresh_interval_ms_->value()
+                                                       : 1000);
+                        appendLog("auto-refresh resumed");
+                        writeEventMetricsRow("auto-refresh:resumed");
+                        updateStatusLabel();
+                    }
+                });
+            }
+            current_pause_keepalive_ms_ = 0;
+            current_neutral_rc_ms_ = 0;
+            current_critical_command_ms_ = 0;
+        }
         updateStatusLabel();
     }
 
@@ -1493,14 +1981,42 @@ private:
     std::atomic<bool> video_decoder_seen_sps_{false};
     std::atomic<bool> video_decoder_seen_pps_{false};
     std::atomic<bool> video_decoder_synced_{false};
+    std::atomic<int64_t> vision_last_ui_frame_convert_ms_{0};
+    std::atomic<uint64_t> vision_latest_frame_sequence_{0};
+    uint64_t vision_displayed_frame_sequence_ = 0;
 #endif
     bool vision_pipeline_running_ = false;
     bool vision_paused_ = false;
     bool vision_overlay_enabled_ = true;
+    bool critical_command_active_ = false;
+    int64_t current_pause_keepalive_ms_ = 0;
+    int64_t current_neutral_rc_ms_ = 0;
+    int64_t current_critical_command_ms_ = 0;
+    bool has_last_vision_gui_tick_ = false;
+    bool has_last_state_gui_tick_ = false;
+    std::chrono::steady_clock::time_point last_vision_gui_tick_tp_;
+    std::chrono::steady_clock::time_point last_state_gui_tick_tp_;
+    int64_t last_gui_vision_tick_delay_ms_ = 0;
+    int64_t last_gui_state_tick_delay_ms_ = 0;
+    int64_t last_vision_refresh_duration_ms_ = 0;
+    int64_t last_state_refresh_duration_ms_ = 0;
+    std::atomic<int64_t> last_frame_convert_ms_{0};
+    int64_t last_frame_scale_ms_ = 0;
+    int64_t last_vision_frame_mutex_wait_ms_ = 0;
+    int64_t last_state_history_fetch_ms_ = 0;
+    std::atomic<uint64_t> ui_frames_converted_{0};
+    std::atomic<uint64_t> ui_frames_dropped_{0};
+    std::atomic<uint64_t> ui_frames_displayed_{0};
 
     QCheckBox* csv_enabled_ = nullptr;
     QLineEdit* csv_path_edit_ = nullptr;
     std::ofstream csv_file_;
+    tello::MetricsCollector metrics_;
+    std::chrono::steady_clock::time_point metrics_started_at_;
+    uint64_t metrics_attempt_ = 0;
+    std::chrono::steady_clock::time_point last_vision_metrics_csv_tp_;
+    uint64_t last_vision_metrics_packets_ = 0;
+    uint64_t last_metrics_state_packets_valid_ = 0;
 
     QSpinBox* speed_spin_ = nullptr;
     QSlider* rc_lr_slider_ = nullptr;

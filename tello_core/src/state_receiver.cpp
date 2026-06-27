@@ -1,5 +1,6 @@
 #include "tello/state_receiver.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <thread>
@@ -185,6 +186,16 @@ std::vector<StateReceiver::RcCommandSample> StateReceiver::getRecordedRcCommandS
     return recorded_rc_samples_;
 }
 
+size_t StateReceiver::getRecordedStateSampleCount() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return recorded_samples_.size();
+}
+
+size_t StateReceiver::getRecordedRcCommandSampleCount() const {
+    std::lock_guard<std::mutex> lock(history_mutex_);
+    return recorded_rc_samples_.size();
+}
+
 void StateReceiver::recordRcCommandSample(
     int a,
     int b,
@@ -359,6 +370,22 @@ void StateReceiver::receiveLoop() {
                     } else {
                         stats_.rx_hz_ema = (kEmaAlpha * hz_inst) + ((1.0 - kEmaAlpha) * stats_.rx_hz_ema);
                     }
+                }
+
+                const int64_t interarrival_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - last_packet_tp_).count();
+                stats_.last_interarrival_ms = interarrival_ms;
+                stats_.max_interarrival_ms = std::max(stats_.max_interarrival_ms, interarrival_ms);
+                if (interarrival_ms >= 300) {
+                    ++stats_.gap_events_300ms;
+                    stats_.last_gap_ms = interarrival_ms;
+                    stats_.last_gap_sequence = stats_.packets_total;
+                }
+                if (interarrival_ms >= 500) {
+                    ++stats_.gap_events_500ms;
+                }
+                if (interarrival_ms >= 1000) {
+                    ++stats_.gap_events_1000ms;
                 }
             }
             last_packet_tp_ = now;

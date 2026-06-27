@@ -161,7 +161,15 @@ CMakeFiles/tello_cli.dir/apps/cli/main.cpp.o: \
  /usr/include/c++/13/chrono /usr/include/c++/13/bits/chrono.h \
  /usr/include/c++/13/ratio /usr/include/c++/13/limits \
  /usr/include/c++/13/ctime /usr/include/c++/13/bits/parse_numbers.h \
+ /usr/include/c++/13/condition_variable \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/error_constants.h \
+ /usr/include/c++/13/bits/std_mutex.h \
+ /usr/include/c++/13/bits/unique_lock.h /usr/include/c++/13/atomic \
+ /usr/include/c++/13/mutex /usr/include/c++/13/thread \
+ /usr/include/c++/13/bits/std_thread.h \
+ /usr/include/c++/13/bits/this_thread_sleep.h \
  /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/logger.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/metrics.hpp \
  /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/state_receiver.hpp \
  /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/state_parser.hpp \
  /usr/include/c++/13/unordered_map \
@@ -170,22 +178,24 @@ CMakeFiles/tello_cli.dir/apps/cli/main.cpp.o: \
  /usr/include/c++/13/bits/hashtable_policy.h \
  /usr/include/c++/13/bits/enable_special_members.h \
  /usr/include/c++/13/bits/node_handle.h \
- /usr/include/c++/13/bits/erase_if.h /usr/include/c++/13/atomic \
- /usr/include/c++/13/mutex \
- /usr/include/x86_64-linux-gnu/c++/13/bits/error_constants.h \
- /usr/include/c++/13/bits/std_mutex.h \
- /usr/include/c++/13/bits/unique_lock.h /usr/include/c++/13/thread \
- /usr/include/c++/13/bits/std_thread.h \
- /usr/include/c++/13/bits/this_thread_sleep.h \
- /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_decoder_ffmpeg.hpp \
- /usr/include/c++/13/functional /usr/include/c++/13/bits/std_function.h \
+ /usr/include/c++/13/bits/erase_if.h /usr/include/c++/13/deque \
+ /usr/include/c++/13/bits/stl_deque.h /usr/include/c++/13/bits/deque.tcc \
  /usr/include/c++/13/vector /usr/include/c++/13/bits/stl_vector.h \
  /usr/include/c++/13/bits/stl_bvector.h \
- /usr/include/c++/13/bits/vector.tcc /usr/include/c++/13/array \
- /usr/include/c++/13/compare /usr/include/c++/13/bits/stl_algo.h \
+ /usr/include/c++/13/bits/vector.tcc \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_receiver.hpp \
+ /usr/include/c++/13/functional /usr/include/c++/13/bits/std_function.h \
+ /usr/include/c++/13/array /usr/include/c++/13/compare \
+ /usr/include/c++/13/bits/stl_algo.h \
  /usr/include/c++/13/bits/algorithmfwd.h \
  /usr/include/c++/13/bits/stl_heap.h \
  /usr/include/c++/13/bits/uniform_int_dist.h \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_stream_assembler.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_decoder_ffmpeg.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/state_receiver.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_decoder_ffmpeg.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_pipeline_recovery.hpp \
+ /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/tello_client.hpp \
  /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_receiver.hpp \
  /home/gabriel_fernandes/CS\ 500/tello_core/include/tello/video_stream_assembler.hpp \
  /usr/include/c++/13/csignal /usr/include/signal.h \

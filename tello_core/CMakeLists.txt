@@ -13,7 +13,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompilerOptions.cmake)
 # Optional FFmpeg decode backend
 option(TELLO_ENABLE_FFMPEG "Enable FFmpeg video decoder backend when available" ON)
 option(TELLO_REQUIRE_FFMPEG "Require FFmpeg backend and fail configure if missing" OFF)
-option(TELLO_ENABLE_OPENCV_VIEWER "Enable OpenCV window rendering in tello_viewer" ON)
+option(TELLO_ENABLE_OPENCV_VIEWER "Enable OpenCV rendering support for GUI/fallback tools" ON)
 option(TELLO_ENABLE_QT_CONTROL_PANEL "Enable Qt-based tello_control_panel when Qt Widgets is available" ON)
 
 find_package(PkgConfig QUIET)
@@ -55,6 +55,7 @@ add_library(tello_core
     src/state_receiver.cpp
     src/video_receiver.cpp
     src/video_stream_assembler.cpp
+    src/video_pipeline_recovery.cpp
     src/metrics.cpp
 )
 
@@ -94,17 +95,6 @@ add_executable(video_receiver_smoke
 )
 
 target_link_libraries(video_receiver_smoke PRIVATE tello_core)
-
-add_executable(tello_viewer
-    apps/viewer/main.cpp
-)
-
-target_link_libraries(tello_viewer PRIVATE tello_core)
-
-if(TELLO_ENABLE_OPENCV_VIEWER AND OpenCV_FOUND)
-    target_link_libraries(tello_viewer PRIVATE ${OpenCV_LIBS})
-    target_compile_definitions(tello_viewer PRIVATE TELLO_HAS_OPENCV=1)
-endif()
 
 set(TELLO_QT_WIDGETS_TARGET "")
 if(TELLO_ENABLE_QT_CONTROL_PANEL)
@@ -150,6 +140,13 @@ add_executable(test_state_parser
 target_link_libraries(test_state_parser PRIVATE tello_core)
 add_test(NAME unit_state_parser COMMAND test_state_parser)
 set_tests_properties(unit_state_parser PROPERTIES LABELS "unit;offline")
+
+add_executable(test_metrics_collector
+    tests/test_metrics_collector.cpp
+)
+target_link_libraries(test_metrics_collector PRIVATE tello_core)
+add_test(NAME unit_metrics_collector COMMAND test_metrics_collector)
+set_tests_properties(unit_metrics_collector PROPERTIES LABELS "unit;offline")
 
 # Hardware tests (require connected DJI Tello)
 if(ENABLE_HARDWARE_TESTS)

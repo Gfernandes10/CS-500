@@ -1,7 +1,9 @@
 #include "tello/tello_client.hpp"
 #include "tello/logger.hpp"
+#include "tello/metrics.hpp"
 #include "tello/state_receiver.hpp"
 #include "tello/video_decoder_ffmpeg.hpp"
+#include "tello/video_pipeline_recovery.hpp"
 #include "tello/video_receiver.hpp"
 #include "tello/video_stream_assembler.hpp"
 
@@ -89,16 +91,6 @@ std::string runModeToString(RunMode mode) {
         default:
             return "UNKNOWN";
     }
-}
-
-std::string sanitizeCsvField(const std::string& input) {
-    std::string out = input;
-    for (char& c : out) {
-        if (c == ',' || c == '\n' || c == '\r') {
-            c = ';';
-        }
-    }
-    return out;
 }
 
 void printUsage() {
@@ -264,13 +256,18 @@ int main(int argc, char** argv) {
 
     int attempt = 0;
     const std::string run_mode_str = runModeToString(options.mode);
-    const std::string test_id_csv = sanitizeCsvField(options.test_id);
-    const std::string scenario_csv = sanitizeCsvField(options.scenario);
-    const std::string notes_csv = sanitizeCsvField(options.notes);
 
     if (options.mode == RunMode::VIDEO_WATCH) {
         std::ofstream metrics_csv;
         const bool metrics_enabled = !options.metrics_csv_path.empty();
+        tello::MetricsCollector metrics;
+        tello::MetricsCollector::ExperimentMetadata metadata{};
+        metadata.test_id = options.test_id;
+        metadata.scenario = options.scenario;
+        metadata.notes = options.notes;
+        metadata.run_mode = run_mode_str;
+        metrics.setExperimentMetadata(metadata);
+
         if (metrics_enabled) {
             metrics_csv.open(options.metrics_csv_path, std::ios::out | std::ios::trunc);
             if (!metrics_csv.is_open()) {
@@ -278,9 +275,7 @@ int main(int argc, char** argv) {
                 client.shutdown();
                 return 6;
             }
-            metrics_csv
-                << "test_id,scenario,notes,run_mode,elapsed_ms,attempt,packets_total,delta,pps_ema,bytes_total,age_ms,timeouts,errors,nal_units,nal_sps,nal_pps,nal_idr,nal_nonidr,nal_other,nal_gated,parser_resyncs,buffered_bytes,dec_frames,dec_fps_ema,dec_errors,recovery_attempted,recovery_result,recovery_hard,event,cmd_state"
-                << std::endl;
+            metrics_csv << metrics.toCsvHeader() << std::endl;
             std::cout << "[tello_cli] metrics_csv: " << options.metrics_csv_path << std::endl;
         }
 
@@ -302,7 +297,7 @@ int main(int argc, char** argv) {
         tello::VideoStreamAssembler assembler;
     #ifdef TELLO_HAS_FFMPEG
         tello::VideoDecoderFfmpeg decoder;
-        const bool decoder_ready = decoder.initialize();
+        bool decoder_ready = decoder.initialize();
         std::cout << "[tello_cli] ffmpeg_decoder: " << (decoder_ready ? "enabled" : "init_failed") << std::endl;
     #else
         std::cout << "[tello_cli] ffmpeg_decoder: not_built" << std::endl;
@@ -374,6 +369,22 @@ int main(int argc, char** argv) {
         uint64_t last_count = 0;
         const int64_t stall_age_threshold_ms = std::max<int64_t>(3000, static_cast<int64_t>(options.interval_ms) * 3);
         const int64_t recovery_cooldown_ms = 3000;
+        tello::VideoPipelineRecoveryOptions video_recovery_options;
+        video_recovery_options.bind_ip = "0.0.0.0";
+        video_recovery_options.video_port = 11111;
+        video_recovery_options.receiver_timeout_ms = 500;
+        tello::VideoPipelineRecoveryHooks video_recovery_hooks;
+        video_recovery_hooks.before_restart = [&]() {
+            nal_sps = 0;
+            nal_pps = 0;
+            nal_idr = 0;
+            nal_non_idr = 0;
+            nal_other = 0;
+            nal_decode_gated = 0;
+            decoder_seen_sps = false;
+            decoder_seen_pps = false;
+            decoder_synced = false;
+        };
 
         while (g_keep_running.load()) {
             if (shouldStopByDuration()) {
@@ -422,11 +433,37 @@ int main(int argc, char** argv) {
                 std::cout << "[tello_cli] video_last_error=\"" << err << "\"" << std::endl;
             }
 
-            const tello::TelloClient::VideoRecoveryStatus recovery =
-                client.recoverVideoStreamIfStalled(
+            const tello::VideoPipelineRecoveryResult recovery_result =
+                tello::VideoPipelineRecovery::recoverIfStalled(
+                    client,
+                    receiver,
+                    assembler,
                     stats.last_packet_age_ms,
                     stall_age_threshold_ms,
-                    recovery_cooldown_ms);
+                    recovery_cooldown_ms,
+                    video_recovery_options,
+                    video_recovery_hooks
+#ifdef TELLO_HAS_FFMPEG
+                    ,
+                    &decoder,
+                    &decoder_ready
+#endif
+                );
+            const tello::TelloClient::VideoRecoveryStatus recovery = recovery_result.session;
+            const bool video_pipeline_restarted = recovery_result.video_pipeline_restarted;
+            const tello::ResponseCode video_restart_rc = recovery_result.video_restart_result;
+
+            if (recovery_result.power_cycle_recovery_used) {
+                std::cout << "[tello_cli] command channel unavailable; attempting power-cycle recovery..." << std::endl;
+            }
+
+            if (recovery.attempted && video_restart_rc != tello::ResponseCode::OK) {
+                std::cout << "[tello_cli] video pipeline restart: "
+                          << responseCodeToString(video_restart_rc) << std::endl;
+            } else if (video_pipeline_restarted) {
+                last_count = 0;
+                std::cout << "[tello_cli] video pipeline restart: OK" << std::endl;
+            }
 
             tello::TelloClient::ConnectionEvent event = tello::TelloClient::ConnectionEvent::NONE;
 
@@ -434,7 +471,10 @@ int main(int argc, char** argv) {
                 std::cout << "[tello_cli] video stall detected (age_ms=" << stats.last_packet_age_ms
                           << "), attempting stream recovery..." << std::endl;
                 std::cout << "[tello_cli] streamOn(recover): " << responseCodeToString(recovery.result)
+                          << " | stage=" << recovery.stage
+                          << " | command_channel=" << (recovery.command_channel_available ? "available" : "unavailable")
                           << " | hard_recovery=" << (recovery.used_hard_recovery ? "yes" : "no")
+                          << " | video_restart=" << (video_pipeline_restarted ? "yes" : "no")
                           << " | cmd_state=" << connectionStateToString(client.getConnectionState())
                           << std::endl;
 
@@ -460,76 +500,33 @@ int main(int argc, char** argv) {
                     event_str = "RESTORED";
                 }
 
-                const std::string recovery_result_str =
-                    recovery.attempted ? responseCodeToString(recovery.result) : "NA";
-
+                metrics.setElapsedMs(elapsed_ms);
+                metrics.setAttempt(static_cast<uint64_t>(attempt));
+                metrics.updateVideoReceiverStats(stats);
+                metrics.setVideoPacketDelta(delta);
+                metrics.updateVideoAssemblerStats(assembler_stats);
+                metrics.updateNalClassificationStats(
+                    nal_sps.load(),
+                    nal_pps.load(),
+                    nal_idr.load(),
+                    nal_non_idr.load(),
+                    nal_other.load(),
+                    nal_decode_gated.load());
 #ifdef TELLO_HAS_FFMPEG
-                metrics_csv
-                    << test_id_csv << ","
-                    << scenario_csv << ","
-                    << notes_csv << ","
-                    << run_mode_str << ","
-                    << elapsed_ms << ","
-                    << attempt << ","
-                    << count << ","
-                    << delta << ","
-                    << stats.rx_pps_ema << ","
-                    << stats.bytes_total << ","
-                    << stats.last_packet_age_ms << ","
-                    << stats.recv_timeouts << ","
-                    << stats.recv_errors << ","
-                    << assembler_stats.nal_units_out << ","
-                    << nal_sps.load() << ","
-                    << nal_pps.load() << ","
-                    << nal_idr.load() << ","
-                    << nal_non_idr.load() << ","
-                    << nal_other.load() << ","
-                    << nal_decode_gated.load() << ","
-                    << assembler_stats.parse_resyncs << ","
-                    << assembler_stats.buffered_bytes << ","
-                    << decoder_stats.frames_decoded << ","
-                    << decoder_stats.decode_fps_ema << ","
-                    << decoder_stats.decode_errors << ","
-                    << (recovery.attempted ? 1 : 0) << ","
-                    << recovery_result_str << ","
-                    << (recovery.used_hard_recovery ? 1 : 0) << ","
-                    << event_str << ","
-                    << connectionStateToString(client.getConnectionState())
-                    << std::endl;
+                metrics.updateDecoderStats(decoder_stats);
 #else
-                metrics_csv
-                    << test_id_csv << ","
-                    << scenario_csv << ","
-                    << notes_csv << ","
-                    << run_mode_str << ","
-                    << elapsed_ms << ","
-                    << attempt << ","
-                    << count << ","
-                    << delta << ","
-                    << stats.rx_pps_ema << ","
-                    << stats.bytes_total << ","
-                    << stats.last_packet_age_ms << ","
-                    << stats.recv_timeouts << ","
-                    << stats.recv_errors << ","
-                    << assembler_stats.nal_units_out << ","
-                    << nal_sps.load() << ","
-                    << nal_pps.load() << ","
-                    << nal_idr.load() << ","
-                    << nal_non_idr.load() << ","
-                    << nal_other.load() << ","
-                    << nal_decode_gated.load() << ","
-                    << assembler_stats.parse_resyncs << ","
-                    << assembler_stats.buffered_bytes << ","
-                    << 0 << ","
-                    << 0.0 << ","
-                    << 0 << ","
-                    << (recovery.attempted ? 1 : 0) << ","
-                    << recovery_result_str << ","
-                    << (recovery.used_hard_recovery ? 1 : 0) << ","
-                    << event_str << ","
-                    << connectionStateToString(client.getConnectionState())
-                    << std::endl;
+                metrics.updateDecoderStats(tello::VideoDecoderFfmpeg::Stats{});
 #endif
+                metrics.recordRecoveryEvent(
+                    recovery.attempted,
+                    recovery.result,
+                    recovery.used_hard_recovery,
+                    recovery.stage,
+                    recovery.command_channel_available);
+                metrics.setEvent(event_str);
+                metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
+                metrics.setLastOutageFailures(client.getLastOutageFailures());
+                metrics_csv << metrics.toCsvLine() << std::endl;
             }
 
             last_count = count;
@@ -544,6 +541,27 @@ int main(int argc, char** argv) {
     }
 
     if (options.mode == RunMode::STATE_WATCH) {
+        std::ofstream metrics_csv;
+        const bool metrics_enabled = !options.metrics_csv_path.empty();
+        tello::MetricsCollector metrics;
+        tello::MetricsCollector::ExperimentMetadata metadata{};
+        metadata.test_id = options.test_id;
+        metadata.scenario = options.scenario;
+        metadata.notes = options.notes;
+        metadata.run_mode = run_mode_str;
+        metrics.setExperimentMetadata(metadata);
+
+        if (metrics_enabled) {
+            metrics_csv.open(options.metrics_csv_path, std::ios::out | std::ios::trunc);
+            if (!metrics_csv.is_open()) {
+                std::cerr << "[tello_cli] failed to open metrics csv: " << options.metrics_csv_path << std::endl;
+                client.shutdown();
+                return 6;
+            }
+            metrics_csv << metrics.toCsvHeader() << std::endl;
+            std::cout << "[tello_cli] metrics_csv: " << options.metrics_csv_path << std::endl;
+        }
+
         // Entering SDK mode once improves chance of receiving telemetry state packets.
         const tello::ResponseCode sdk_rc = client.enterSdkMode();
         std::cout << "[tello_cli] enterSdkMode(command): " << responseCodeToString(sdk_rc) << std::endl;
@@ -565,6 +583,15 @@ int main(int argc, char** argv) {
             ++attempt;
 
             const tello::StateReceiver::TelemetryStats stats = receiver.getTelemetryStats();
+            const tello::TelloClient::ConnectionEvent event = client.consumeConnectionEvent();
+
+            if (event == tello::TelloClient::ConnectionEvent::LOST) {
+                std::cout << "[tello_cli] event: connection lost" << std::endl;
+            } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
+                std::cout << "[tello_cli] event: connection restored"
+                          << " (after " << client.getLastOutageFailures() << " failed attempts)"
+                          << std::endl;
+            }
 
             if (!receiver.hasReceivedState()) {
                 std::cout << "[tello_cli] attempt=" << attempt
@@ -589,6 +616,27 @@ int main(int argc, char** argv) {
                           << std::endl;
             }
 
+            if (metrics_enabled) {
+                const auto elapsed_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - run_started_at).count();
+
+                std::string event_str = "NONE";
+                if (event == tello::TelloClient::ConnectionEvent::LOST) {
+                    event_str = "LOST";
+                } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
+                    event_str = "RESTORED";
+                }
+
+                metrics.setElapsedMs(elapsed_ms);
+                metrics.setAttempt(static_cast<uint64_t>(attempt));
+                metrics.updateTelemetryStats(stats);
+                metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
+                metrics.setEvent(event_str);
+                metrics.setLastOutageFailures(client.getLastOutageFailures());
+                metrics_csv << metrics.toCsvLine() << std::endl;
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(options.interval_ms));
         }
 
@@ -600,6 +648,14 @@ int main(int argc, char** argv) {
 
     std::ofstream metrics_csv;
     const bool metrics_enabled = !options.metrics_csv_path.empty();
+    tello::MetricsCollector metrics;
+    tello::MetricsCollector::ExperimentMetadata metadata{};
+    metadata.test_id = options.test_id;
+    metadata.scenario = options.scenario;
+    metadata.notes = options.notes;
+    metadata.run_mode = run_mode_str;
+    metrics.setExperimentMetadata(metadata);
+
     if (metrics_enabled) {
         metrics_csv.open(options.metrics_csv_path, std::ios::out | std::ios::trunc);
         if (!metrics_csv.is_open()) {
@@ -607,9 +663,7 @@ int main(int argc, char** argv) {
             client.shutdown();
             return 6;
         }
-        metrics_csv
-            << "test_id,scenario,notes,run_mode,elapsed_ms,attempt,command,latency_ms,result,response,cmd_state,event,last_outage_failures"
-            << std::endl;
+        metrics_csv << metrics.toCsvHeader() << std::endl;
         std::cout << "[tello_cli] metrics_csv: " << options.metrics_csv_path << std::endl;
     }
 
@@ -660,28 +714,17 @@ int main(int argc, char** argv) {
                 event_str = "RESTORED";
             }
 
-            std::string response_sanitized = battery_response;
-            for (char& c : response_sanitized) {
-                if (c == ',' || c == '\n' || c == '\r') {
-                    c = ';';
-                }
-            }
-
-            metrics_csv
-                << test_id_csv << ","
-                << scenario_csv << ","
-                << notes_csv << ","
-                << run_mode_str << ","
-                << elapsed_ms << ","
-                << attempt << ","
-                << "battery?" << ","
-                << command_elapsed_ms << ","
-                << responseCodeToString(battery_rc) << ","
-                << response_sanitized << ","
-                << connectionStateToString(client.getConnectionState()) << ","
-                << event_str << ","
-                << client.getLastOutageFailures()
-                << std::endl;
+            metrics.setElapsedMs(elapsed_ms);
+            metrics.setAttempt(static_cast<uint64_t>(attempt));
+            metrics.recordCommandResult(
+                "battery?",
+                static_cast<double>(command_elapsed_ms),
+                battery_rc,
+                battery_response);
+            metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
+            metrics.setEvent(event_str);
+            metrics.setLastOutageFailures(client.getLastOutageFailures());
+            metrics_csv << metrics.toCsvLine() << std::endl;
         }
 
         if (options.mode == RunMode::WATCH) {

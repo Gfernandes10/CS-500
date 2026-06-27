@@ -50,6 +50,13 @@ public:
         double rx_hz_instant = 0.0;      ///< Instantaneous receive rate (Hz)
         double rx_hz_ema = 0.0;          ///< Smoothed receive rate (EMA, Hz)
         int64_t last_packet_age_ms = -1; ///< Milliseconds since last packet (-1 if none)
+        int64_t last_interarrival_ms = -1; ///< Gap between latest two UDP packets.
+        int64_t max_interarrival_ms = 0;   ///< Largest observed UDP packet gap.
+        int64_t last_gap_ms = 0;           ///< Latest gap above diagnostic threshold.
+        uint64_t last_gap_sequence = 0;    ///< Packet sequence where latest gap was observed.
+        uint64_t gap_events_300ms = 0;     ///< Count of packet gaps >= 300 ms.
+        uint64_t gap_events_500ms = 0;     ///< Count of packet gaps >= 500 ms.
+        uint64_t gap_events_1000ms = 0;    ///< Count of packet gaps >= 1000 ms.
     };
 
     /// Constructor
@@ -119,6 +126,12 @@ public:
 
     /// Get a snapshot of recorded RC command samples.
     std::vector<RcCommandSample> getRecordedRcCommandSamples() const;
+
+    /// Get recorded state sample count without copying the recording buffer.
+    size_t getRecordedStateSampleCount() const;
+
+    /// Get recorded RC command sample count without copying the recording buffer.
+    size_t getRecordedRcCommandSampleCount() const;
 
     /// Record one RC command event, tied to current recording timeline when enabled.
     void recordRcCommandSample(int a, int b, int c, int d, const std::string& source, ResponseCode response);

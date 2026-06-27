@@ -49,6 +49,12 @@
 },
 {
   "directory": "/home/gabriel_fernandes/CS 500/tello_core/build",
+  "command": "/usr/bin/c++ -DTELLO_HAS_FFMPEG=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -o CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp\"",
+  "file": "/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp",
+  "output": "CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o"
+},
+{
+  "directory": "/home/gabriel_fernandes/CS 500/tello_core/build",
   "command": "/usr/bin/c++ -DTELLO_HAS_FFMPEG=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -o CMakeFiles/tello_core.dir/src/metrics.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/src/metrics.cpp\"",
   "file": "/home/gabriel_fernandes/CS 500/tello_core/src/metrics.cpp",
   "output": "CMakeFiles/tello_core.dir/src/metrics.cpp.o"
@@ -73,12 +79,6 @@
 },
 {
   "directory": "/home/gabriel_fernandes/CS 500/tello_core/build",
-  "command": "/usr/bin/c++ -DTELLO_HAS_FFMPEG=1 -DTELLO_HAS_OPENCV=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -isystem /usr/include/opencv4 -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -o CMakeFiles/tello_viewer.dir/apps/viewer/main.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/apps/viewer/main.cpp\"",
-  "file": "/home/gabriel_fernandes/CS 500/tello_core/apps/viewer/main.cpp",
-  "output": "CMakeFiles/tello_viewer.dir/apps/viewer/main.cpp.o"
-},
-{
-  "directory": "/home/gabriel_fernandes/CS 500/tello_core/build",
   "command": "/usr/bin/c++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -DTELLO_HAS_FFMPEG=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -isystem /usr/include/x86_64-linux-gnu/qt5 -isystem /usr/include/x86_64-linux-gnu/qt5/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt5/QtGui -isystem /usr/include/x86_64-linux-gnu/qt5/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++ -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -fPIC -o CMakeFiles/tello_control_panel.dir/apps/control_panel/main_qt.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/apps/control_panel/main_qt.cpp\"",
   "file": "/home/gabriel_fernandes/CS 500/tello_core/apps/control_panel/main_qt.cpp",
   "output": "CMakeFiles/tello_control_panel.dir/apps/control_panel/main_qt.cpp.o"
@@ -88,5 +88,11 @@
   "command": "/usr/bin/c++ -DTELLO_HAS_FFMPEG=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -o CMakeFiles/test_state_parser.dir/tests/test_state_parser.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/tests/test_state_parser.cpp\"",
   "file": "/home/gabriel_fernandes/CS 500/tello_core/tests/test_state_parser.cpp",
   "output": "CMakeFiles/test_state_parser.dir/tests/test_state_parser.cpp.o"
+},
+{
+  "directory": "/home/gabriel_fernandes/CS 500/tello_core/build",
+  "command": "/usr/bin/c++ -DTELLO_HAS_FFMPEG=1 -I\"/home/gabriel_fernandes/CS 500/tello_core/include\" -g -O0 -std=gnu++17 -Wall -Wextra -Wpedantic -Werror -Wshadow -Wunused -Wconversion -o CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.o -c \"/home/gabriel_fernandes/CS 500/tello_core/tests/test_metrics_collector.cpp\"",
+  "file": "/home/gabriel_fernandes/CS 500/tello_core/tests/test_metrics_collector.cpp",
+  "output": "CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.o"
 }
 ]

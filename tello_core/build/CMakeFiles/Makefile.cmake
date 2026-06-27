@@ -158,7 +158,7 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/tello_core.dir/DependInfo.cmake"
   "CMakeFiles/tello_cli.dir/DependInfo.cmake"
   "CMakeFiles/video_receiver_smoke.dir/DependInfo.cmake"
-  "CMakeFiles/tello_viewer.dir/DependInfo.cmake"
   "CMakeFiles/tello_control_panel.dir/DependInfo.cmake"
   "CMakeFiles/test_state_parser.dir/DependInfo.cmake"
+  "CMakeFiles/test_metrics_collector.dir/DependInfo.cmake"
   )

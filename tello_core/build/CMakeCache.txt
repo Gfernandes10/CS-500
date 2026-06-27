@@ -233,7 +233,7 @@ Qt6_DIR:PATH=Qt6_DIR-NOTFOUND
 //Enable FFmpeg video decoder backend when available
 TELLO_ENABLE_FFMPEG:BOOL=ON
 
-//Enable OpenCV window rendering in tello_viewer
+//Enable OpenCV rendering support for GUI/fallback tools
 TELLO_ENABLE_OPENCV_VIEWER:BOOL=ON
 
 //Enable Qt-based tello_control_panel when Qt Widgets is available

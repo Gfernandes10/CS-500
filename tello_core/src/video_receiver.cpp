@@ -1,5 +1,6 @@
 #include "tello/video_receiver.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -161,6 +162,22 @@ void VideoReceiver::receiveLoop() {
                     } else {
                         stats_.rx_pps_ema = (alpha * instant_pps) + ((1.0 - alpha) * stats_.rx_pps_ema);
                     }
+                }
+
+                const int64_t interarrival_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - last_packet_tp_).count();
+                stats_.last_interarrival_ms = interarrival_ms;
+                stats_.max_interarrival_ms = std::max(stats_.max_interarrival_ms, interarrival_ms);
+                if (interarrival_ms >= 300) {
+                    ++stats_.gap_events_300ms;
+                    stats_.last_gap_ms = interarrival_ms;
+                    stats_.last_gap_sequence = stats_.packets_total;
+                }
+                if (interarrival_ms >= 500) {
+                    ++stats_.gap_events_500ms;
+                }
+                if (interarrival_ms >= 1000) {
+                    ++stats_.gap_events_1000ms;
                 }
             }
 

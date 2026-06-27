@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -O0 CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.o -o test_metrics_collector  libtello_core.a /usr/lib/x86_64-linux-gnu/libavcodec.so /usr/lib/x86_64-linux-gnu/libavutil.so /usr/lib/x86_64-linux-gnu/libswscale.so 

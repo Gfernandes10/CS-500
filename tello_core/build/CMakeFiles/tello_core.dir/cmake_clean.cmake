@@ -15,6 +15,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/tello_core.dir/src/udp_socket.cpp.o.d"
   "CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o"
   "CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o.d"
+  "CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o"
+  "CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o.d"
   "CMakeFiles/tello_core.dir/src/video_receiver.cpp.o"
   "CMakeFiles/tello_core.dir/src/video_receiver.cpp.o.d"
   "CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.o"

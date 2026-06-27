@@ -29,6 +29,13 @@ public:
         double rx_pps_instant = 0.0;     ///< Instantaneous packet receive rate (pps)
         double rx_pps_ema = 0.0;         ///< Smoothed packet receive rate (pps, EMA)
         int64_t last_packet_age_ms = -1; ///< Milliseconds since last packet (-1 if none)
+        int64_t last_interarrival_ms = -1; ///< Gap between latest two UDP packets.
+        int64_t max_interarrival_ms = 0;   ///< Largest observed UDP packet gap.
+        int64_t last_gap_ms = 0;           ///< Latest gap above diagnostic threshold.
+        uint64_t last_gap_sequence = 0;    ///< Packet sequence where latest gap was observed.
+        uint64_t gap_events_300ms = 0;     ///< Count of packet gaps >= 300 ms.
+        uint64_t gap_events_500ms = 0;     ///< Count of packet gaps >= 500 ms.
+        uint64_t gap_events_1000ms = 0;    ///< Count of packet gaps >= 1000 ms.
     };
 
     /// Raw packet callback type.

@@ -2495,7 +2495,7 @@
 			[
 				{
 					"name" : "HELPSTRING",
-					"value" : "Enable OpenCV window rendering in tello_viewer"
+					"value" : "Enable OpenCV rendering support for GUI/fallback tools"
 				}
 			],
 			"type" : "BOOL",

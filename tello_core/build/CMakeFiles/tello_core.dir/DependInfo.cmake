@@ -16,6 +16,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/gabriel_fernandes/CS 500/tello_core/src/tello_client.cpp" "CMakeFiles/tello_core.dir/src/tello_client.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/tello_client.cpp.o.d"
   "/home/gabriel_fernandes/CS 500/tello_core/src/udp_socket.cpp" "CMakeFiles/tello_core.dir/src/udp_socket.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/udp_socket.cpp.o.d"
   "/home/gabriel_fernandes/CS 500/tello_core/src/video_decoder_ffmpeg.cpp" "CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o.d"
+  "/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp" "CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o.d"
   "/home/gabriel_fernandes/CS 500/tello_core/src/video_receiver.cpp" "CMakeFiles/tello_core.dir/src/video_receiver.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/video_receiver.cpp.o.d"
   "/home/gabriel_fernandes/CS 500/tello_core/src/video_stream_assembler.cpp" "CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.o" "gcc" "CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.o.d"
   )

@@ -166,19 +166,6 @@ video_receiver_smoke/fast:
 .PHONY : video_receiver_smoke/fast
 
 #=============================================================================
-# Target rules for targets named tello_viewer
-
-# Build rule for target.
-tello_viewer: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 tello_viewer
-.PHONY : tello_viewer
-
-# fast build rule for target.
-tello_viewer/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_viewer.dir/build.make CMakeFiles/tello_viewer.dir/build
-.PHONY : tello_viewer/fast
-
-#=============================================================================
 # Target rules for targets named tello_control_panel
 
 # Build rule for target.
@@ -203,6 +190,19 @@ test_state_parser: cmake_check_build_system
 test_state_parser/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_state_parser.dir/build.make CMakeFiles/test_state_parser.dir/build
 .PHONY : test_state_parser/fast
+
+#=============================================================================
+# Target rules for targets named test_metrics_collector
+
+# Build rule for target.
+test_metrics_collector: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_metrics_collector
+.PHONY : test_metrics_collector
+
+# fast build rule for target.
+test_metrics_collector/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_metrics_collector.dir/build.make CMakeFiles/test_metrics_collector.dir/build
+.PHONY : test_metrics_collector/fast
 
 apps/cli/main.o: apps/cli/main.cpp.o
 .PHONY : apps/cli/main.o
@@ -275,30 +275,6 @@ apps/control_panel/main_qt.s: apps/control_panel/main_qt.cpp.s
 apps/control_panel/main_qt.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_control_panel.dir/build.make CMakeFiles/tello_control_panel.dir/apps/control_panel/main_qt.cpp.s
 .PHONY : apps/control_panel/main_qt.cpp.s
-
-apps/viewer/main.o: apps/viewer/main.cpp.o
-.PHONY : apps/viewer/main.o
-
-# target to build an object file
-apps/viewer/main.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_viewer.dir/build.make CMakeFiles/tello_viewer.dir/apps/viewer/main.cpp.o
-.PHONY : apps/viewer/main.cpp.o
-
-apps/viewer/main.i: apps/viewer/main.cpp.i
-.PHONY : apps/viewer/main.i
-
-# target to preprocess a source file
-apps/viewer/main.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_viewer.dir/build.make CMakeFiles/tello_viewer.dir/apps/viewer/main.cpp.i
-.PHONY : apps/viewer/main.cpp.i
-
-apps/viewer/main.s: apps/viewer/main.cpp.s
-.PHONY : apps/viewer/main.s
-
-# target to generate assembly for a file
-apps/viewer/main.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_viewer.dir/build.make CMakeFiles/tello_viewer.dir/apps/viewer/main.cpp.s
-.PHONY : apps/viewer/main.cpp.s
 
 src/command_executor.o: src/command_executor.cpp.o
 .PHONY : src/command_executor.o
@@ -492,6 +468,30 @@ src/video_decoder_ffmpeg.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_core.dir/build.make CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.s
 .PHONY : src/video_decoder_ffmpeg.cpp.s
 
+src/video_pipeline_recovery.o: src/video_pipeline_recovery.cpp.o
+.PHONY : src/video_pipeline_recovery.o
+
+# target to build an object file
+src/video_pipeline_recovery.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_core.dir/build.make CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o
+.PHONY : src/video_pipeline_recovery.cpp.o
+
+src/video_pipeline_recovery.i: src/video_pipeline_recovery.cpp.i
+.PHONY : src/video_pipeline_recovery.i
+
+# target to preprocess a source file
+src/video_pipeline_recovery.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_core.dir/build.make CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.i
+.PHONY : src/video_pipeline_recovery.cpp.i
+
+src/video_pipeline_recovery.s: src/video_pipeline_recovery.cpp.s
+.PHONY : src/video_pipeline_recovery.s
+
+# target to generate assembly for a file
+src/video_pipeline_recovery.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_core.dir/build.make CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.s
+.PHONY : src/video_pipeline_recovery.cpp.s
+
 src/video_receiver.o: src/video_receiver.cpp.o
 .PHONY : src/video_receiver.o
 
@@ -540,6 +540,30 @@ src/video_stream_assembler.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/tello_core.dir/build.make CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.s
 .PHONY : src/video_stream_assembler.cpp.s
 
+tests/test_metrics_collector.o: tests/test_metrics_collector.cpp.o
+.PHONY : tests/test_metrics_collector.o
+
+# target to build an object file
+tests/test_metrics_collector.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_metrics_collector.dir/build.make CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.o
+.PHONY : tests/test_metrics_collector.cpp.o
+
+tests/test_metrics_collector.i: tests/test_metrics_collector.cpp.i
+.PHONY : tests/test_metrics_collector.i
+
+# target to preprocess a source file
+tests/test_metrics_collector.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_metrics_collector.dir/build.make CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.i
+.PHONY : tests/test_metrics_collector.cpp.i
+
+tests/test_metrics_collector.s: tests/test_metrics_collector.cpp.s
+.PHONY : tests/test_metrics_collector.s
+
+# target to generate assembly for a file
+tests/test_metrics_collector.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_metrics_collector.dir/build.make CMakeFiles/test_metrics_collector.dir/tests/test_metrics_collector.cpp.s
+.PHONY : tests/test_metrics_collector.cpp.s
+
 tests/test_state_parser.o: tests/test_state_parser.cpp.o
 .PHONY : tests/test_state_parser.o
 
@@ -576,7 +600,7 @@ help:
 	@echo "... tello_cli"
 	@echo "... tello_control_panel"
 	@echo "... tello_core"
-	@echo "... tello_viewer"
+	@echo "... test_metrics_collector"
 	@echo "... test_state_parser"
 	@echo "... video_receiver_smoke"
 	@echo "... apps/cli/main.o"
@@ -588,9 +612,6 @@ help:
 	@echo "... apps/control_panel/main_qt.o"
 	@echo "... apps/control_panel/main_qt.i"
 	@echo "... apps/control_panel/main_qt.s"
-	@echo "... apps/viewer/main.o"
-	@echo "... apps/viewer/main.i"
-	@echo "... apps/viewer/main.s"
 	@echo "... src/command_executor.o"
 	@echo "... src/command_executor.i"
 	@echo "... src/command_executor.s"
@@ -615,12 +636,18 @@ help:
 	@echo "... src/video_decoder_ffmpeg.o"
 	@echo "... src/video_decoder_ffmpeg.i"
 	@echo "... src/video_decoder_ffmpeg.s"
+	@echo "... src/video_pipeline_recovery.o"
+	@echo "... src/video_pipeline_recovery.i"
+	@echo "... src/video_pipeline_recovery.s"
 	@echo "... src/video_receiver.o"
 	@echo "... src/video_receiver.i"
 	@echo "... src/video_receiver.s"
 	@echo "... src/video_stream_assembler.o"
 	@echo "... src/video_stream_assembler.i"
 	@echo "... src/video_stream_assembler.s"
+	@echo "... tests/test_metrics_collector.o"
+	@echo "... tests/test_metrics_collector.i"
+	@echo "... tests/test_metrics_collector.s"
 	@echo "... tests/test_state_parser.o"
 	@echo "... tests/test_state_parser.i"
 	@echo "... tests/test_state_parser.s"

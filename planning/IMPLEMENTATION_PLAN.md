@@ -131,6 +131,36 @@ Guide the construction of the project step by step, with **you writing all code*
 8. E4 implemented: unified experiment metadata fields (`test_id`, `scenario`, `notes`, `run_mode`) added to viewer, CLI video-watch, and CLI command CSV exports.
 9. E4 validation passed with bounded hardware runs and populated metadata rows in all current CSV modes.
 
+### Current Execution Plan Before Phase G Documentation
+
+**Date:** 2026-06-26
+
+Before closing Phase G documentation, the project will focus on the remaining technical foundation and validation work in this order:
+
+1. Close Phase E metrics and evaluation gaps.
+- Implement the remaining `MetricsCollector` behavior in `metrics.cpp`.
+- Add telemetry rate and telemetry age export using the same metadata-prefixed CSV format already used by command/video exports.
+- Define the experiment scenario matrix: baseline, stream reset, Wi-Fi reconnect, and power-cycle.
+- Add a small plotting/analysis template for generated CSV files.
+
+2. Clean up infrastructure debt.
+- Implement the remaining `ConsoleLogger` behavior in `logger.cpp`.
+- Decide whether `MetricsCollector` becomes the shared metrics path, or whether the current CLI/viewer CSV helpers remain separate.
+- Keep this work focused on infrastructure correctness before adding more demo features.
+
+3. Strengthen automated tests.
+- Add offline tests for `MetricsCollector`.
+- Add offline tests for `ConsoleLogger` formatting/filtering behavior.
+- Add offline tests for `VideoStreamAssembler`.
+- Expand parser edge-case coverage.
+- Add command-channel retry/response tests using a controlled fake endpoint or equivalent test harness.
+
+4. Continue Phase G implementation and real-hardware validation before writing Phase G documentation.
+- Perform additional real Tello hardware tests for the Qt control panel.
+- Validate GUI command controls, telemetry display, video start/stop behavior, CSV/recording workflow, and safe flight commands when appropriate.
+- Record observed issues and fixes before writing the final Phase G documentation.
+- Defer Phase G documentation until these hardware checks are complete enough to describe accurately.
+
 ### Phase F - ROS2 (Weeks 10-11)
 **Goal:** integrate with robotics ecosystem.
 - Create ROS2 package bridge to `tello_core`.

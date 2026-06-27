@@ -181,10 +181,24 @@ CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S "/home/gabriel_fernandes/CS 500/tello_core/src/video_stream_assembler.cpp" -o CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.s
 
+CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o: CMakeFiles/tello_core.dir/flags.make
+CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o: /home/gabriel_fernandes/CS\ 500/tello_core/src/video_pipeline_recovery.cpp
+CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o: CMakeFiles/tello_core.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o -MF CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o.d -o CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o -c "/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp"
+
+CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E "/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp" > CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.i
+
+CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S "/home/gabriel_fernandes/CS 500/tello_core/src/video_pipeline_recovery.cpp" -o CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.s
+
 CMakeFiles/tello_core.dir/src/metrics.cpp.o: CMakeFiles/tello_core.dir/flags.make
 CMakeFiles/tello_core.dir/src/metrics.cpp.o: /home/gabriel_fernandes/CS\ 500/tello_core/src/metrics.cpp
 CMakeFiles/tello_core.dir/src/metrics.cpp.o: CMakeFiles/tello_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/tello_core.dir/src/metrics.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/tello_core.dir/src/metrics.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/tello_core.dir/src/metrics.cpp.o -MF CMakeFiles/tello_core.dir/src/metrics.cpp.o.d -o CMakeFiles/tello_core.dir/src/metrics.cpp.o -c "/home/gabriel_fernandes/CS 500/tello_core/src/metrics.cpp"
 
 CMakeFiles/tello_core.dir/src/metrics.cpp.i: cmake_force
@@ -198,7 +212,7 @@ CMakeFiles/tello_core.dir/src/metrics.cpp.s: cmake_force
 CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o: CMakeFiles/tello_core.dir/flags.make
 CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o: /home/gabriel_fernandes/CS\ 500/tello_core/src/video_decoder_ffmpeg.cpp
 CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o: CMakeFiles/tello_core.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o -MF CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o.d -o CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o -c "/home/gabriel_fernandes/CS 500/tello_core/src/video_decoder_ffmpeg.cpp"
 
 CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.i: cmake_force
@@ -219,6 +233,7 @@ tello_core_OBJECTS = \
 "CMakeFiles/tello_core.dir/src/state_receiver.cpp.o" \
 "CMakeFiles/tello_core.dir/src/video_receiver.cpp.o" \
 "CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.o" \
+"CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o" \
 "CMakeFiles/tello_core.dir/src/metrics.cpp.o" \
 "CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o"
 
@@ -233,11 +248,12 @@ libtello_core.a: CMakeFiles/tello_core.dir/src/state_parser.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/src/state_receiver.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/src/video_receiver.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/src/video_stream_assembler.cpp.o
+libtello_core.a: CMakeFiles/tello_core.dir/src/video_pipeline_recovery.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/src/metrics.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/src/video_decoder_ffmpeg.cpp.o
 libtello_core.a: CMakeFiles/tello_core.dir/build.make
 libtello_core.a: CMakeFiles/tello_core.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_11) "Linking CXX static library libtello_core.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir="/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles" --progress-num=$(CMAKE_PROGRESS_12) "Linking CXX static library libtello_core.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/tello_core.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/tello_core.dir/link.txt --verbose=$(VERBOSE)
 

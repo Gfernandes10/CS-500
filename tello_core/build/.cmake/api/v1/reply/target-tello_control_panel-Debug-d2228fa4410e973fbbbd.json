@@ -2,7 +2,7 @@
 	"artifacts" : 
 	[
 		{
-			"path" : "test_state_parser"
+			"path" : "tello_control_panel"
 		}
 	],
 	"backtrace" : 1,
@@ -17,6 +17,8 @@
 			"_pkg_recalculate",
 			"_pkg_check_modules_internal",
 			"pkg_check_modules",
+			"_populate_Widgets_target_properties",
+			"find_package",
 			"add_compile_options",
 			"include"
 		],
@@ -24,6 +26,8 @@
 		[
 			"CMakeLists.txt",
 			"/usr/share/cmake-3.28/Modules/FindPkgConfig.cmake",
+			"/usr/lib/x86_64-linux-gnu/cmake/Qt5Widgets/Qt5WidgetsConfig.cmake",
+			"/usr/lib/x86_64-linux-gnu/cmake/Qt5/Qt5Config.cmake",
 			"cmake/CompilerOptions.cmake"
 		],
 		"nodes" : 
@@ -34,13 +38,13 @@
 			{
 				"command" : 0,
 				"file" : 0,
-				"line" : 147,
+				"line" : 115,
 				"parent" : 0
 			},
 			{
 				"command" : 1,
 				"file" : 0,
-				"line" : 150,
+				"line" : 118,
 				"parent" : 0
 			},
 			{
@@ -136,18 +140,50 @@
 			{
 				"command" : 8,
 				"file" : 0,
-				"line" : 11,
+				"line" : 106,
 				"parent" : 0
 			},
 			{
-				"file" : 2,
+				"file" : 3,
 				"parent" : 18
+			},
+			{
+				"command" : 8,
+				"file" : 3,
+				"line" : 28,
+				"parent" : 19
+			},
+			{
+				"file" : 2,
+				"parent" : 20
 			},
 			{
 				"command" : 7,
 				"file" : 2,
+				"line" : 213,
+				"parent" : 21
+			},
+			{
+				"command" : 2,
+				"file" : 2,
+				"line" : 57,
+				"parent" : 22
+			},
+			{
+				"command" : 10,
+				"file" : 0,
+				"line" : 11,
+				"parent" : 0
+			},
+			{
+				"file" : 4,
+				"parent" : 24
+			},
+			{
+				"command" : 9,
+				"file" : 4,
 				"line" : 9,
-				"parent" : 19
+				"parent" : 25
 			}
 		]
 	},
@@ -160,36 +196,52 @@
 					"fragment" : "-g -O0 -std=gnu++17"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wall"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wextra"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wpedantic"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Werror"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wshadow"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wunused"
 				},
 				{
-					"backtrace" : 20,
+					"backtrace" : 26,
 					"fragment" : "-Wconversion"
+				},
+				{
+					"backtrace" : 2,
+					"fragment" : "-fPIC"
 				}
 			],
 			"defines" : 
 			[
+				{
+					"backtrace" : 2,
+					"define" : "QT_CORE_LIB"
+				},
+				{
+					"backtrace" : 2,
+					"define" : "QT_GUI_LIB"
+				},
+				{
+					"backtrace" : 2,
+					"define" : "QT_WIDGETS_LIB"
+				},
 				{
 					"backtrace" : 2,
 					"define" : "TELLO_HAS_FFMPEG=1"
@@ -200,6 +252,31 @@
 				{
 					"backtrace" : 2,
 					"path" : "/home/gabriel_fernandes/CS 500/tello_core/include"
+				},
+				{
+					"backtrace" : 2,
+					"isSystem" : true,
+					"path" : "/usr/include/x86_64-linux-gnu/qt5"
+				},
+				{
+					"backtrace" : 2,
+					"isSystem" : true,
+					"path" : "/usr/include/x86_64-linux-gnu/qt5/QtWidgets"
+				},
+				{
+					"backtrace" : 2,
+					"isSystem" : true,
+					"path" : "/usr/include/x86_64-linux-gnu/qt5/QtGui"
+				},
+				{
+					"backtrace" : 2,
+					"isSystem" : true,
+					"path" : "/usr/include/x86_64-linux-gnu/qt5/QtCore"
+				},
+				{
+					"backtrace" : 2,
+					"isSystem" : true,
+					"path" : "/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++"
 				}
 			],
 			"language" : "CXX",
@@ -207,7 +284,7 @@
 			{
 				"backtraces" : 
 				[
-					1
+					2
 				],
 				"standard" : "17"
 			},
@@ -224,7 +301,7 @@
 			"id" : "tello_core::@6890427a1f51a3e7e1df"
 		}
 	],
-	"id" : "test_state_parser::@6890427a1f51a3e7e1df",
+	"id" : "tello_control_panel::@6890427a1f51a3e7e1df",
 	"link" : 
 	{
 		"commandFragments" : 
@@ -243,6 +320,11 @@
 				"role" : "libraries"
 			},
 			{
+				"backtrace" : 2,
+				"fragment" : "/usr/lib/x86_64-linux-gnu/libQt5Widgets.so.5.15.13",
+				"role" : "libraries"
+			},
+			{
 				"backtrace" : 7,
 				"fragment" : "/usr/lib/x86_64-linux-gnu/libavcodec.so",
 				"role" : "libraries"
@@ -256,12 +338,22 @@
 				"backtrace" : 17,
 				"fragment" : "/usr/lib/x86_64-linux-gnu/libswscale.so",
 				"role" : "libraries"
+			},
+			{
+				"backtrace" : 23,
+				"fragment" : "/usr/lib/x86_64-linux-gnu/libQt5Gui.so.5.15.13",
+				"role" : "libraries"
+			},
+			{
+				"backtrace" : 23,
+				"fragment" : "/usr/lib/x86_64-linux-gnu/libQt5Core.so.5.15.13",
+				"role" : "libraries"
 			}
 		],
 		"language" : "CXX"
 	},
-	"name" : "test_state_parser",
-	"nameOnDisk" : "test_state_parser",
+	"name" : "tello_control_panel",
+	"nameOnDisk" : "tello_control_panel",
 	"paths" : 
 	{
 		"build" : ".",
@@ -282,7 +374,7 @@
 		{
 			"backtrace" : 1,
 			"compileGroupIndex" : 0,
-			"path" : "tests/test_state_parser.cpp",
+			"path" : "apps/control_panel/main_qt.cpp",
 			"sourceGroupIndex" : 0
 		}
 	],

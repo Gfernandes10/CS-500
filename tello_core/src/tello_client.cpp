@@ -5,8 +5,32 @@
 
 namespace tello {
 
+namespace {
+
+bool isCriticalControlCommand(const std::string& command) {
+    return command == "takeoff" || command == "land" || command == "emergency";
+}
+
+class ForegroundCommandScope {
+public:
+    explicit ForegroundCommandScope(std::atomic<int32_t>& counter)
+        : counter_(counter) {
+        counter_.fetch_add(1);
+    }
+
+    ~ForegroundCommandScope() {
+        counter_.fetch_sub(1);
+    }
+
+private:
+    std::atomic<int32_t>& counter_;
+};
+
+} // namespace
+
 TelloClient::TelloClient()
-    : initialized_(false),
+    : command_mutex_(),
+    initialized_(false),
     sdk_mode_confirmed_(false),
     consecutive_failures_(0),
     reliability_config_(),
@@ -16,10 +40,17 @@ TelloClient::TelloClient()
     drone_ip_("192.168.10.1"),
     drone_port_(8889),
     local_port_(9000),
-        last_video_recovery_attempt_tp_(std::chrono::steady_clock::now()),
-        has_last_video_recovery_attempt_(false),
-      command_socket_(nullptr),
-      command_executor_(nullptr) {}
+    last_video_recovery_attempt_tp_(std::chrono::steady_clock::now()),
+    has_last_video_recovery_attempt_(false),
+    command_socket_(nullptr),
+    command_executor_(nullptr),
+    foreground_command_requests_(0),
+    keepalive_running_(false),
+    keepalive_thread_(),
+    keepalive_mutex_(),
+    keepalive_cv_(),
+    keepalive_interval_ms_(5000),
+    keepalive_command_("battery?") {}
 
 TelloClient::~TelloClient() {
     shutdown();
@@ -31,6 +62,8 @@ ResponseCode TelloClient::initialize(const std::string& drone_ip, uint16_t drone
     local_port_ = local_port;
 
     shutdown();
+
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
 
     const ResponseCode open_rc = openCommandChannel();
     if (open_rc != ResponseCode::OK) {
@@ -76,6 +109,8 @@ ResponseCode TelloClient::openCommandChannel() {
 }
 
 ResponseCode TelloClient::recoverCommandSession() {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     connection_state_ = ConnectionState::RECOVERING;
 
     for (int32_t attempt = 1; attempt <= reliability_config_.recovery_attempts; ++attempt) {
@@ -114,6 +149,10 @@ ResponseCode TelloClient::ensureSdkMode() {
 }
 
 void TelloClient::shutdown() {
+    stopSdkKeepalive();
+
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     initialized_ = false;
     sdk_mode_confirmed_ = false;
     consecutive_failures_ = 0;
@@ -131,6 +170,9 @@ void TelloClient::shutdown() {
 }
 
 ResponseCode TelloClient::enterSdkMode() {
+    ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     if (!initialized_ || command_executor_ == nullptr) {
         return ResponseCode::ERROR;
     }
@@ -171,6 +213,8 @@ TelloClient::VideoRecoveryStatus TelloClient::recoverVideoStreamIfStalled(
     int64_t last_packet_age_ms,
     int64_t stall_threshold_ms,
     int64_t recovery_cooldown_ms) {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     VideoRecoveryStatus status;
 
     if (stall_threshold_ms < 0) {
@@ -197,39 +241,98 @@ TelloClient::VideoRecoveryStatus TelloClient::recoverVideoStreamIfStalled(
     last_video_recovery_attempt_tp_ = now;
 
     status.attempted = true;
-    status.result = streamOn();
+    status.stage = "streamon";
+    std::string response;
+    status.result = command_executor_ != nullptr
+        ? command_executor_->executeCommandWithResponseSingleAttempt("streamon", response)
+        : ResponseCode::ERROR;
     if (status.result == ResponseCode::OK) {
+        markCommandSuccess();
+        status.command_channel_available = true;
         return status;
     }
 
-    // Hard fallback for power-cycle cases: reopen command session and re-enter SDK mode.
-    status.used_hard_recovery = true;
-    constexpr int32_t kHardRecoveryAttempts = 3;
-    constexpr int32_t kHardRecoveryBackoffMs = 1500;
-    for (int32_t attempt = 0; attempt < kHardRecoveryAttempts; ++attempt) {
-        const ResponseCode init_rc = initialize(drone_ip_, drone_port_, local_port_);
-        if (init_rc != ResponseCode::OK) {
-            status.result = init_rc;
-            std::this_thread::sleep_for(std::chrono::milliseconds(kHardRecoveryBackoffMs));
-            continue;
-        }
-
-        const ResponseCode sdk_rc = enterSdkMode();
-        if (sdk_rc != ResponseCode::OK) {
-            status.result = sdk_rc;
-            std::this_thread::sleep_for(std::chrono::milliseconds(kHardRecoveryBackoffMs));
-            continue;
-        }
-
-        const ResponseCode stream_rc = streamOn();
-        status.result = stream_rc;
-        if (stream_rc == ResponseCode::OK) {
-            return status;
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(kHardRecoveryBackoffMs));
+    status.stage = "battery_probe";
+    response.clear();
+    status.result = command_executor_ != nullptr
+        ? command_executor_->executeCommandWithResponseSingleAttempt("battery?", response)
+        : ResponseCode::ERROR;
+    if (status.result != ResponseCode::OK) {
+        markCommandFailure();
+        return status;
     }
 
+    status.command_channel_available = true;
+
+    status.stage = "command";
+    response.clear();
+    status.result = command_executor_ != nullptr
+        ? command_executor_->executeCommandWithResponseSingleAttempt("command", response)
+        : ResponseCode::ERROR;
+    if (status.result == ResponseCode::OK) {
+        sdk_mode_confirmed_ = true;
+        markCommandSuccess();
+
+        status.stage = "streamon_after_command";
+        response.clear();
+        status.result = command_executor_->executeCommandWithResponseSingleAttempt("streamon", response);
+        if (status.result == ResponseCode::OK) {
+            markCommandSuccess();
+            return status;
+        }
+    }
+
+    // Short hard fallback for command-channel drift after a confirmed probe.
+    status.used_hard_recovery = true;
+    status.stage = "reinitialize";
+    status.result = initialize(drone_ip_, drone_port_, local_port_);
+    if (status.result != ResponseCode::OK) {
+        return status;
+    }
+
+    status.stage = "command_after_reinit";
+    status.result = enterSdkMode();
+    if (status.result != ResponseCode::OK) {
+        return status;
+    }
+
+    status.stage = "streamon_after_reinit";
+    status.result = streamOn();
+    return status;
+}
+
+TelloClient::VideoRecoveryStatus TelloClient::recoverAfterPowerCycle() {
+    VideoRecoveryStatus status;
+    status.attempted = true;
+    status.used_hard_recovery = true;
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+        connection_state_ = ConnectionState::RECOVERING;
+    }
+
+    status.stage = "power_reinitialize";
+    status.result = initialize(drone_ip_, drone_port_, local_port_);
+    if (status.result != ResponseCode::OK) {
+        return status;
+    }
+
+    status.stage = "power_command";
+    status.result = enterSdkMode();
+    if (status.result != ResponseCode::OK) {
+        return status;
+    }
+
+    status.stage = "power_battery_probe";
+    std::string response;
+    status.result = getBattery(response);
+    if (status.result != ResponseCode::OK) {
+        return status;
+    }
+    status.command_channel_available = true;
+
+    status.stage = "power_streamon";
+    status.result = streamOn();
     return status;
 }
 
@@ -254,12 +357,16 @@ ResponseCode TelloClient::getSerialNumber(std::string& response) {
 }
 
 ResponseCode TelloClient::sendCommand(const std::string& command) {
+    ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     if (!initialized_ || command_executor_ == nullptr) {
         return ResponseCode::ERROR;
     }
 
     const bool is_sdk_command = (command == "command");
     const bool expects_query_payload = !command.empty() && command.back() == '?';
+    const bool critical_control_command = isCriticalControlCommand(command);
     if (!is_sdk_command) {
         const ResponseCode sdk_rc = ensureSdkMode();
         if (sdk_rc != ResponseCode::OK) {
@@ -283,7 +390,10 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
         }
     }
 
-    ResponseCode rc = command_executor_->executeCommand(command);
+    std::string response;
+    ResponseCode rc = critical_control_command
+        ? command_executor_->executeCommandWithResponseSingleAttempt(command, response)
+        : command_executor_->executeCommand(command);
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
         if (is_sdk_command) {
@@ -296,6 +406,12 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
     // still correspond to a successfully executed action. Do not immediately
     // force RECOVERING for non-query control commands.
     if (rc == ResponseCode::ERROR && !expects_query_payload && !is_sdk_command) {
+        return rc;
+    }
+
+    // Critical flight commands may already be executing when the ack is lost.
+    // Avoid sending recovery "command" traffic immediately after takeoff/land.
+    if (critical_control_command) {
         return rc;
     }
 
@@ -326,6 +442,9 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
 }
 
 ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, std::string& response) {
+    ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     response.clear();
     if (!initialized_ || command_executor_ == nullptr) {
         return ResponseCode::ERROR;
@@ -333,6 +452,7 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
 
     const bool is_sdk_command = (command == "command");
     const bool expects_query_payload = !command.empty() && command.back() == '?';
+    const bool critical_control_command = isCriticalControlCommand(command);
 
     const ResponseCode sdk_rc = ensureSdkMode();
     if (sdk_rc != ResponseCode::OK) {
@@ -354,7 +474,9 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
         }
     }
 
-    ResponseCode rc = command_executor_->executeCommandWithResponse(command, response);
+    ResponseCode rc = critical_control_command
+        ? command_executor_->executeCommandWithResponseSingleAttempt(command, response)
+        : command_executor_->executeCommandWithResponse(command, response);
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
         return rc;
@@ -363,6 +485,12 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
     // Keep channel state stable on ambiguous control-command "error" replies,
     // so a following safety command (for example, land) is not penalized.
     if (rc == ResponseCode::ERROR && !expects_query_payload && !is_sdk_command) {
+        return rc;
+    }
+
+    // Critical flight commands may already be executing when the ack is lost.
+    // Return the result to the caller and let telemetry/operator flow decide.
+    if (critical_control_command) {
         return rc;
     }
 
@@ -420,33 +548,143 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
     return rc;
 }
 
+ResponseCode TelloClient::sendCommandNoWait(const std::string& command) {
+    ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
+    if (!initialized_ || command_executor_ == nullptr) {
+        return ResponseCode::ERROR;
+    }
+
+    const ResponseCode rc = command_executor_->sendCommandNoWait(command);
+    if (rc == ResponseCode::OK) {
+        markCommandSuccess();
+    } else {
+        markCommandFailure();
+    }
+    return rc;
+}
+
+ResponseCode TelloClient::startSdkKeepalive(int32_t interval_ms, const std::string& command) {
+    if (interval_ms <= 0 || command.empty()) {
+        return ResponseCode::ERROR;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> command_lock(command_mutex_);
+        if (!initialized_ || command_executor_ == nullptr) {
+            return ResponseCode::ERROR;
+        }
+    }
+
+    stopSdkKeepalive();
+
+    {
+        std::lock_guard<std::mutex> lock(keepalive_mutex_);
+        keepalive_interval_ms_ = interval_ms;
+        keepalive_command_ = command;
+        keepalive_running_ = true;
+    }
+
+    keepalive_thread_ = std::thread(&TelloClient::keepaliveLoop, this);
+    return ResponseCode::OK;
+}
+
+void TelloClient::stopSdkKeepalive() {
+    {
+        std::lock_guard<std::mutex> lock(keepalive_mutex_);
+        if (!keepalive_running_.load()) {
+            return;
+        }
+        keepalive_running_ = false;
+    }
+
+    keepalive_cv_.notify_all();
+    if (keepalive_thread_.joinable()) {
+        if (std::this_thread::get_id() == keepalive_thread_.get_id()) {
+            keepalive_thread_.detach();
+        } else {
+            keepalive_thread_.join();
+        }
+    }
+}
+
+bool TelloClient::isSdkKeepaliveRunning() const {
+    return keepalive_running_.load();
+}
+
+void TelloClient::keepaliveLoop() {
+    while (keepalive_running_.load()) {
+        int32_t interval_ms = 5000;
+        std::string command;
+        {
+            std::unique_lock<std::mutex> lock(keepalive_mutex_);
+            interval_ms = keepalive_interval_ms_;
+            command = keepalive_command_;
+            const bool stopped = keepalive_cv_.wait_for(
+                lock,
+                std::chrono::milliseconds(interval_ms),
+                [this]() { return !keepalive_running_.load(); });
+            if (stopped || !keepalive_running_.load()) {
+                break;
+            }
+        }
+
+        if (foreground_command_requests_.load() > 0) {
+            continue;
+        }
+
+        std::unique_lock<std::recursive_mutex> command_lock(command_mutex_, std::try_to_lock);
+        if (!command_lock.owns_lock()) {
+            continue;
+        }
+        if (!initialized_ || command_executor_ == nullptr) {
+            continue;
+        }
+
+        std::string response;
+        const ResponseCode rc = command_executor_->executeCommandWithResponse(command, response);
+        if (rc == ResponseCode::OK) {
+            markCommandSuccess();
+        }
+    }
+}
+
 bool TelloClient::isInitialized() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return initialized_;
 }
 
 TelloClient::ConnectionState TelloClient::getConnectionState() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return connection_state_;
 }
 
 TelloClient::ConnectionEvent TelloClient::consumeConnectionEvent() {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     const ConnectionEvent evt = pending_event_;
     pending_event_ = ConnectionEvent::NONE;
     return evt;
 }
 
 int32_t TelloClient::getConsecutiveFailures() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return consecutive_failures_;
 }
 
 int32_t TelloClient::getLastOutageFailures() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return last_outage_failures_;
 }
 
 TelloClient::ReliabilityConfig TelloClient::getReliabilityConfig() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return reliability_config_;
 }
 
 void TelloClient::setReliabilityConfig(const ReliabilityConfig& config) {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+
     reliability_config_ = config;
 
     // Keep configuration safe if caller provides invalid values.
@@ -480,10 +718,12 @@ void TelloClient::setReliabilityConfig(const ReliabilityConfig& config) {
 }
 
 std::shared_ptr<UdpSocket> TelloClient::getCommandSocket() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return command_socket_;
 }
 
 std::shared_ptr<CommandExecutor> TelloClient::getCommandExecutor() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     return command_executor_;
 }
 
