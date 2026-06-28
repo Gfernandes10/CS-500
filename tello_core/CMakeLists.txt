@@ -18,13 +18,14 @@ option(TELLO_ENABLE_QT_CONTROL_PANEL "Enable Qt-based tello_control_panel when Q
 
 find_package(PkgConfig QUIET)
 if(TELLO_ENABLE_FFMPEG AND PkgConfig_FOUND)
+    pkg_check_modules(AVFORMAT QUIET IMPORTED_TARGET libavformat)
     pkg_check_modules(AVCODEC QUIET IMPORTED_TARGET libavcodec)
     pkg_check_modules(AVUTIL QUIET IMPORTED_TARGET libavutil)
     pkg_check_modules(SWSCALE QUIET IMPORTED_TARGET libswscale)
 endif()
 
 set(TELLO_HAS_FFMPEG OFF)
-if(TELLO_ENABLE_FFMPEG AND AVCODEC_FOUND AND AVUTIL_FOUND AND SWSCALE_FOUND)
+if(TELLO_ENABLE_FFMPEG AND AVFORMAT_FOUND AND AVCODEC_FOUND AND AVUTIL_FOUND AND SWSCALE_FOUND)
     set(TELLO_HAS_FFMPEG ON)
     message(STATUS "FFmpeg decoder backend enabled")
 else()
@@ -32,7 +33,7 @@ else()
         if(TELLO_REQUIRE_FFMPEG)
             message(FATAL_ERROR
                 "FFmpeg decoder backend is required but not available. "
-                "Install libavcodec/libavutil/libswscale development packages and pkg-config, "
+                "Install libavformat/libavcodec/libavutil/libswscale development packages and pkg-config, "
                 "or configure with -DTELLO_REQUIRE_FFMPEG=OFF for development mode.")
         endif()
         message(STATUS "FFmpeg decoder backend disabled (libavcodec/libavutil/libswscale not found)")
@@ -60,8 +61,8 @@ add_library(tello_core
 )
 
 if(TELLO_HAS_FFMPEG)
-    target_sources(tello_core PRIVATE src/video_decoder_ffmpeg.cpp)
-    target_link_libraries(tello_core PRIVATE PkgConfig::AVCODEC PkgConfig::AVUTIL PkgConfig::SWSCALE)
+    target_sources(tello_core PRIVATE src/video_decoder_ffmpeg.cpp src/video_stream_reader_ffmpeg.cpp)
+    target_link_libraries(tello_core PRIVATE PkgConfig::AVFORMAT PkgConfig::AVCODEC PkgConfig::AVUTIL PkgConfig::SWSCALE)
 endif()
 
 target_include_directories(tello_core PUBLIC
