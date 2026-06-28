@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -O0 CMakeFiles/video_receiver_smoke.dir/apps/cli/video_receiver_smoke.cpp.o -o video_receiver_smoke  libtello_core.a /usr/lib/x86_64-linux-gnu/libavcodec.so /usr/lib/x86_64-linux-gnu/libavutil.so /usr/lib/x86_64-linux-gnu/libswscale.so 

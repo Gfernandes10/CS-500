@@ -1,9 +1,0 @@
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/tello_core.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/tello_cli.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/video_receiver_smoke.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/tello_control_panel.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/test_state_parser.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/test_metrics_collector.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/test.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/edit_cache.dir
-/home/gabriel_fernandes/CS 500/tello_core/build/CMakeFiles/rebuild_cache.dir
