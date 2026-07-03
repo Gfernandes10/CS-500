@@ -46,6 +46,7 @@ StateReceiver::StateReceiver()
             recorded_rc_samples_(),
             recording_enabled_(false),
             recording_start_timestamp_ms_(-1),
+            recording_start_steady_tp_(std::chrono::steady_clock::now()),
             next_state_sequence_(0),
             next_rc_sequence_(0),
       last_error_("") {}
@@ -162,6 +163,7 @@ void StateReceiver::startStateRecording() {
     std::lock_guard<std::mutex> lock(history_mutex_);
     recording_enabled_ = true;
     recording_start_timestamp_ms_ = -1;
+    recording_start_steady_tp_ = std::chrono::steady_clock::now();
     recorded_samples_.clear();
     recorded_rc_samples_.clear();
 }
@@ -204,6 +206,7 @@ void StateReceiver::recordRcCommandSample(
     const std::string& source,
     ResponseCode response) {
     const auto now_sys = std::chrono::system_clock::now();
+    const auto now_steady = std::chrono::steady_clock::now();
     const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now_sys.time_since_epoch()).count();
 
@@ -214,12 +217,15 @@ void StateReceiver::recordRcCommandSample(
 
     if (recording_start_timestamp_ms_ < 0) {
         recording_start_timestamp_ms_ = ts_ms;
+        recording_start_steady_tp_ = now_steady;
     }
 
     RcCommandSample sample;
     sample.sequence = next_rc_sequence_++;
     sample.timestamp_ms = ts_ms;
     sample.recording_elapsed_ms = ts_ms - recording_start_timestamp_ms_;
+    sample.steady_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now_steady - recording_start_steady_tp_).count();
     sample.a = a;
     sample.b = b;
     sample.c = c;
@@ -234,6 +240,7 @@ void StateReceiver::clearRecordedStateSamples() {
     recorded_samples_.clear();
     recorded_rc_samples_.clear();
     recording_start_timestamp_ms_ = -1;
+    recording_start_steady_tp_ = std::chrono::steady_clock::now();
 }
 
 ResponseCode StateReceiver::exportRecordedStateCsv(const std::string& file_path) const {
@@ -250,13 +257,13 @@ ResponseCode StateReceiver::exportRecordedStateCsv(const std::string& file_path)
         return ResponseCode::ERROR;
     }
 
-    csv << "state_sequence,timestamp_ms,recording_elapsed_ms,"
+    csv << "state_sequence,timestamp_ms,recording_elapsed_ms,steady_elapsed_ms,"
         << "pitch,roll,yaw,"
         << "vgx,vgy,vgz,"
         << "templ,temph,tof,h,bat,"
         << "baro,time,agx,agy,agz,"
         << "mid,x,y,z,"
-        << "rc_a,rc_b,rc_c,rc_d,rc_source,rc_result,rc_timestamp_ms,rc_sequence"
+        << "rc_a,rc_b,rc_c,rc_d,rc_source,rc_result,rc_timestamp_ms,rc_steady_elapsed_ms,rc_sequence"
         << '\n';
 
     size_t i_rc = 0;
@@ -271,6 +278,7 @@ ResponseCode StateReceiver::exportRecordedStateCsv(const std::string& file_path)
         csv << s.sequence << ','
             << s.timestamp_ms << ','
             << s.recording_elapsed_ms << ','
+            << s.steady_elapsed_ms << ','
             << s.state.pitch << ','
             << s.state.roll << ','
             << s.state.yaw << ','
@@ -300,9 +308,10 @@ ResponseCode StateReceiver::exportRecordedStateCsv(const std::string& file_path)
                 << '"' << active_rc->source << '"' << ','
                 << '"' << responseCodeToString(active_rc->response) << '"' << ','
                 << active_rc->timestamp_ms << ','
+                << active_rc->steady_elapsed_ms << ','
                 << active_rc->sequence;
         } else {
-            csv << ",,,,,,,";
+            csv << ",,,,,,,,";
         }
 
         csv << '\n';
@@ -408,6 +417,7 @@ void StateReceiver::receiveLoop() {
         }
 
         const auto now_sys = std::chrono::system_clock::now();
+        const auto now_steady = std::chrono::steady_clock::now();
         const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now_sys.time_since_epoch()).count();
 
@@ -422,8 +432,11 @@ void StateReceiver::receiveLoop() {
             if (recording_enabled_) {
                 if (recording_start_timestamp_ms_ < 0) {
                     recording_start_timestamp_ms_ = ts_ms;
+                    recording_start_steady_tp_ = now_steady;
                 }
                 sample.recording_elapsed_ms = ts_ms - recording_start_timestamp_ms_;
+                sample.steady_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now_steady - recording_start_steady_tp_).count();
                 recorded_samples_.push_back(sample);
             }
 

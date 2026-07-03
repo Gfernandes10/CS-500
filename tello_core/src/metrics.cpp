@@ -194,7 +194,7 @@ void MetricsCollector::updateTelemetryState(const TelloState& state, bool availa
     snapshot_.telemetry_temph = state.temph;
 }
 
-void MetricsCollector::updateVideoReceiverStats(const VideoReceiver::VideoStats& stats) {
+void MetricsCollector::updateVideoTransportStats(const VideoTransportStats& stats) {
     // Video transport stats are copied and reduced into a stream freshness label.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.video_rx = stats;
@@ -213,7 +213,7 @@ void MetricsCollector::setVideoPacketDelta(uint64_t delta) {
     snapshot_.video_packet_delta = delta;
 }
 
-void MetricsCollector::updateVideoAssemblerStats(const VideoStreamAssembler::Stats& stats) {
+void MetricsCollector::updateVideoAssemblerStats(const VideoAssemblyStats& stats) {
     // NAL assembly stats are copied from the H264 boundary parser.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.nal = stats;
@@ -237,7 +237,7 @@ void MetricsCollector::updateNalClassificationStats(
     snapshot_.nal_decode_gated = decode_gated;
 }
 
-void MetricsCollector::updateDecoderStats(const VideoDecoderFfmpeg::Stats& stats) {
+void MetricsCollector::updateDecoderStats(const VideoDecodeStats& stats) {
     // Decode stats are copied from the FFmpeg decoder backend.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.decoder = stats;
@@ -385,6 +385,7 @@ void MetricsCollector::updateGuiPerformance(
     int64_t plot_paint_ms,
     int64_t vision_frame_mutex_wait_ms,
     int64_t state_history_fetch_ms,
+    int64_t command_mutex_wait_ms,
     uint64_t ui_frames_converted,
     uint64_t ui_frames_dropped,
     uint64_t ui_frames_displayed,
@@ -401,6 +402,7 @@ void MetricsCollector::updateGuiPerformance(
     snapshot_.plot_paint_ms = plot_paint_ms;
     snapshot_.vision_frame_mutex_wait_ms = vision_frame_mutex_wait_ms;
     snapshot_.state_history_fetch_ms = state_history_fetch_ms;
+    snapshot_.command_mutex_wait_ms = command_mutex_wait_ms;
     snapshot_.ui_frames_converted = ui_frames_converted;
     snapshot_.ui_frames_dropped = ui_frames_dropped;
     snapshot_.ui_frames_displayed = ui_frames_displayed;
@@ -443,6 +445,7 @@ std::string MetricsCollector::toCsvHeader() const {
            "vision_refresh_duration_ms,state_refresh_duration_ms,"
            "frame_convert_ms,frame_scale_ms,plot_paint_ms,"
            "vision_frame_mutex_wait_ms,state_history_fetch_ms,"
+           "command_mutex_wait_ms,"
            "ui_frames_converted,ui_frames_dropped,ui_frames_displayed,plot_samples_displayed,"
            "keepalive_tick_total,keepalive_success_total,keepalive_failure_total,"
            "keepalive_skipped_busy_total,keepalive_skipped_uninitialized_total,"
@@ -569,6 +572,7 @@ std::string MetricsCollector::toCsvLine() const {
         << s.plot_paint_ms << ','
         << s.vision_frame_mutex_wait_ms << ','
         << s.state_history_fetch_ms << ','
+        << s.command_mutex_wait_ms << ','
         << s.ui_frames_converted << ','
         << s.ui_frames_dropped << ','
         << s.ui_frames_displayed << ','

@@ -70,24 +70,24 @@ int main() {
     telemetry.last_interarrival_ms = 33;
     metrics.updateTelemetryStats(telemetry);
 
-    tello::VideoReceiver::VideoStats video{};
+    tello::MetricsCollector::VideoTransportStats video{};
     video.packets_total = 100;
     video.bytes_total = 4096;
     video.recv_errors = 3;
     video.rx_pps_ema = 120.25;
     video.last_packet_age_ms = 10;
     video.last_interarrival_ms = 4;
-    metrics.updateVideoReceiverStats(video);
+    metrics.updateVideoTransportStats(video);
     metrics.setVideoPacketDelta(12);
 
-    tello::VideoStreamAssembler::Stats nal{};
+    tello::MetricsCollector::VideoAssemblyStats nal{};
     nal.packets_in = 100;
     nal.nal_units_out = 42;
     nal.buffered_bytes = 7;
     metrics.updateVideoAssemblerStats(nal);
     metrics.updateNalClassificationStats(2, 2, 1, 37, 0, 4);
 
-    tello::VideoDecoderFfmpeg::Stats decoder{};
+    tello::MetricsCollector::VideoDecodeStats decoder{};
     decoder.nals_in = 42;
     decoder.frames_decoded = 30;
     decoder.decode_errors = 1;
@@ -97,7 +97,7 @@ int main() {
     metrics.updateFrameInfo(960, 720, true);
     metrics.updateDisplayState(true, false);
     metrics.updatePanelDiagnostics("tof", 3, true);
-    metrics.updateGuiPerformance(120, 250, 5, 3, 2, 4, 1, 0, 1, 8, 24, 7, 120);
+    metrics.updateGuiPerformance(120, 250, 5, 3, 2, 4, 1, 0, 1, 6, 8, 24, 7, 120);
     metrics.recordRecoveryEvent(true, tello::ResponseCode::OK, true);
     metrics.setConnectionState("CONNECTED");
     metrics.setEvent("stream_restored");
@@ -113,6 +113,7 @@ int main() {
     ok &= expect(snapshot.video_quality_score == 100, "fresh video quality score should be 100");
     ok &= expect(snapshot.video_packet_delta == 12, "video packet delta should be stored");
     ok &= expect(snapshot.nal.nal_units_out == 42, "NAL stats should be copied");
+    ok &= expect(snapshot.command_mutex_wait_ms == 6, "command mutex wait should be stored");
     ok &= expect(snapshot.nal_sps == 2, "NAL SPS count should be stored");
     ok &= expect(snapshot.nal_pps == 2, "NAL PPS count should be stored");
     ok &= expect(snapshot.nal_idr == 1, "NAL IDR count should be stored");

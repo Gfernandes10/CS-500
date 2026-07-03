@@ -26,6 +26,7 @@ public:
         uint64_t sequence = 0;             ///< Monotonic sample index since receiver start
         int64_t timestamp_ms = 0;          ///< Wall-clock timestamp (Unix epoch ms)
         int64_t recording_elapsed_ms = -1; ///< ms since recording start (-1 if not recording)
+        int64_t steady_elapsed_ms = -1;    ///< monotonic ms since recording start (-1 if not recording)
         TelloState state{};                ///< Parsed telemetry sample
     };
 
@@ -33,6 +34,7 @@ public:
         uint64_t sequence = 0;             ///< Monotonic RC event index since receiver start
         int64_t timestamp_ms = 0;          ///< Wall-clock timestamp (Unix epoch ms)
         int64_t recording_elapsed_ms = -1; ///< ms since recording start (-1 if not recording)
+        int64_t steady_elapsed_ms = -1;    ///< monotonic ms since recording start (-1 if not recording)
         int a = 0;                         ///< RC left/right channel [-100, 100]
         int b = 0;                         ///< RC forward/back channel [-100, 100]
         int c = 0;                         ///< RC up/down channel [-100, 100]
@@ -169,6 +171,7 @@ private:
     std::vector<RcCommandSample> recorded_rc_samples_;
     bool recording_enabled_;
     int64_t recording_start_timestamp_ms_;
+    std::chrono::steady_clock::time_point recording_start_steady_tp_;
     uint64_t next_state_sequence_;
     uint64_t next_rc_sequence_;
 

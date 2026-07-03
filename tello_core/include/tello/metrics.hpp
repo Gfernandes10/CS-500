@@ -1,15 +1,13 @@
 #ifndef TELLO_METRICS_HPP
 #define TELLO_METRICS_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
 
 #include "types.hpp"
 #include "state_receiver.hpp"
-#include "video_receiver.hpp"
-#include "video_stream_assembler.hpp"
-#include "video_decoder_ffmpeg.hpp"
 
 namespace tello {
 
@@ -26,6 +24,42 @@ public:
         std::string scenario;
         std::string notes;
         std::string run_mode;
+    };
+
+    /// Pipeline-neutral video transport counters used by the active FFmpeg Stream path.
+    struct VideoTransportStats {
+        uint64_t packets_total = 0;
+        uint64_t bytes_total = 0;
+        uint64_t recv_timeouts = 0;
+        uint64_t recv_errors = 0;
+        double rx_pps_instant = 0.0;
+        double rx_pps_ema = 0.0;
+        int64_t last_packet_age_ms = -1;
+        int64_t last_interarrival_ms = -1;
+        int64_t max_interarrival_ms = 0;
+        int64_t last_gap_ms = 0;
+        uint64_t last_gap_sequence = 0;
+        uint64_t gap_events_300ms = 0;
+        uint64_t gap_events_500ms = 0;
+        uint64_t gap_events_1000ms = 0;
+    };
+
+    /// Pipeline-neutral stream assembly counters retained for CSV compatibility.
+    struct VideoAssemblyStats {
+        uint64_t packets_in = 0;
+        uint64_t bytes_in = 0;
+        uint64_t nal_units_out = 0;
+        uint64_t parse_resyncs = 0;
+        size_t buffered_bytes = 0;
+    };
+
+    /// Pipeline-neutral decode counters produced by FFmpeg Stream.
+    struct VideoDecodeStats {
+        uint64_t nals_in = 0;
+        uint64_t packets_sent = 0;
+        uint64_t frames_decoded = 0;
+        uint64_t decode_errors = 0;
+        double decode_fps_ema = 0.0;
     };
 
     /// Full-system snapshot of the latest known metrics values.
@@ -59,18 +93,18 @@ public:
         int32_t telemetry_bat = 0;
         int32_t telemetry_templ = 0;
         int32_t telemetry_temph = 0;
-        VideoReceiver::VideoStats video_rx;
+        VideoTransportStats video_rx;
         std::string video_quality = "NO_DATA";
         int32_t video_quality_score = 0;
         uint64_t video_packet_delta = 0;
-        VideoStreamAssembler::Stats nal;
+        VideoAssemblyStats nal;
         uint64_t nal_sps = 0;
         uint64_t nal_pps = 0;
         uint64_t nal_idr = 0;
         uint64_t nal_non_idr = 0;
         uint64_t nal_other = 0;
         uint64_t nal_decode_gated = 0;
-        VideoDecoderFfmpeg::Stats decoder;
+        VideoDecodeStats decoder;
 
         int32_t frame_width = 0;
         int32_t frame_height = 0;
@@ -124,6 +158,7 @@ public:
         int64_t plot_paint_ms = 0;
         int64_t vision_frame_mutex_wait_ms = 0;
         int64_t state_history_fetch_ms = 0;
+        int64_t command_mutex_wait_ms = 0;
         uint64_t ui_frames_converted = 0;
         uint64_t ui_frames_dropped = 0;
         uint64_t ui_frames_displayed = 0;
@@ -169,14 +204,14 @@ public:
     /// Store latest parsed telemetry values that matter for flight diagnosis.
     void updateTelemetryState(const TelloState& state, bool available);
 
-    /// Store latest video UDP receiver statistics.
-    void updateVideoReceiverStats(const VideoReceiver::VideoStats& stats);
+    /// Store latest video stream transport statistics.
+    void updateVideoTransportStats(const VideoTransportStats& stats);
 
     /// Store latest video packet delta for periodic watch rows.
     void setVideoPacketDelta(uint64_t delta);
 
-    /// Store latest H264/NAL assembler statistics.
-    void updateVideoAssemblerStats(const VideoStreamAssembler::Stats& stats);
+    /// Store latest stream assembly statistics.
+    void updateVideoAssemblerStats(const VideoAssemblyStats& stats);
 
     /// Store latest classified NAL counters.
     void updateNalClassificationStats(
@@ -189,7 +224,7 @@ public:
     );
 
     /// Store latest decoder statistics.
-    void updateDecoderStats(const VideoDecoderFfmpeg::Stats& stats);
+    void updateDecoderStats(const VideoDecodeStats& stats);
 
     /// Store latest decoded/displayed frame information.
     void updateFrameInfo(int32_t width, int32_t height, bool keyframe);
@@ -270,6 +305,7 @@ public:
         int64_t plot_paint_ms,
         int64_t vision_frame_mutex_wait_ms,
         int64_t state_history_fetch_ms,
+        int64_t command_mutex_wait_ms,
         uint64_t ui_frames_converted,
         uint64_t ui_frames_dropped,
         uint64_t ui_frames_displayed,

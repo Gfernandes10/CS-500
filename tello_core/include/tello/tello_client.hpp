@@ -141,11 +141,17 @@ public:
     /// Stop the background SDK keepalive loop if it is running.
     void stopSdkKeepalive();
 
+    /// Request keepalive stop without waiting for an in-flight query to finish.
+    void requestSdkKeepaliveStop();
+
     /// Check whether SDK keepalive is currently running.
     bool isSdkKeepaliveRunning() const;
 
     /// Get diagnostic counters for the background SDK keepalive loop.
     KeepaliveStats getSdkKeepaliveStats() const;
+
+    /// Latest measured wait time before a command path obtained the command mutex.
+    int64_t getLastCommandMutexWaitMs() const;
 
     /// State
     bool isInitialized() const;
@@ -173,13 +179,13 @@ private:
     void markCommandFailure();
 
     mutable std::recursive_mutex command_mutex_;
-    bool initialized_;
+    std::atomic<bool> initialized_;
     bool sdk_mode_confirmed_;
-    int32_t consecutive_failures_;
+    std::atomic<int32_t> consecutive_failures_;
     ReliabilityConfig reliability_config_;
-    int32_t last_outage_failures_;
-    ConnectionState connection_state_;
-    ConnectionEvent pending_event_;
+    std::atomic<int32_t> last_outage_failures_;
+    std::atomic<ConnectionState> connection_state_;
+    std::atomic<ConnectionEvent> pending_event_;
     std::string drone_ip_;
     uint16_t drone_port_;
     uint16_t local_port_;
@@ -189,6 +195,7 @@ private:
     std::shared_ptr<CommandExecutor> command_executor_;
 
     std::atomic<int32_t> foreground_command_requests_;
+    std::atomic<int64_t> last_command_mutex_wait_ms_;
     std::atomic<bool> keepalive_running_;
     std::thread keepalive_thread_;
     mutable std::mutex keepalive_mutex_;

@@ -2,10 +2,7 @@
 #include "tello/logger.hpp"
 #include "tello/metrics.hpp"
 #include "tello/state_receiver.hpp"
-#include "tello/video_decoder_ffmpeg.hpp"
-#include "tello/video_pipeline_recovery.hpp"
-#include "tello/video_receiver.hpp"
-#include "tello/video_stream_assembler.hpp"
+#include "tello/video_stream_reader_ffmpeg.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -91,6 +88,15 @@ std::string runModeToString(RunMode mode) {
         default:
             return "UNKNOWN";
     }
+}
+
+bool shouldRestartLocalVideoPipeline(const tello::TelloClient::VideoRecoveryStatus& status) {
+    if (!status.attempted || status.result != tello::ResponseCode::OK) {
+        return false;
+    }
+    return status.stage == "power_streamon"
+        || status.stage == "streamon_after_reinit"
+        || status.stage == "streamon_after_command";
 }
 
 void printUsage() {
@@ -297,73 +303,12 @@ int main(int argc, char** argv) {
             return 4;
         }
 
-        tello::VideoReceiver receiver;
-        tello::VideoStreamAssembler assembler;
-    #ifdef TELLO_HAS_FFMPEG
-        tello::VideoDecoderFfmpeg decoder;
-        bool decoder_ready = decoder.initialize();
-        std::cout << "[tello_cli] ffmpeg_decoder: " << (decoder_ready ? "enabled" : "init_failed") << std::endl;
-    #else
-        std::cout << "[tello_cli] ffmpeg_decoder: not_built" << std::endl;
-    #endif
-        std::atomic<uint64_t> nal_sps{0};
-        std::atomic<uint64_t> nal_pps{0};
-        std::atomic<uint64_t> nal_idr{0};
-        std::atomic<uint64_t> nal_non_idr{0};
-        std::atomic<uint64_t> nal_other{0};
-        std::atomic<uint64_t> nal_decode_gated{0};
-        std::atomic<bool> decoder_seen_sps{false};
-        std::atomic<bool> decoder_seen_pps{false};
-        std::atomic<bool> decoder_synced{false};
+        std::cout << "[tello_cli] video_backend: FFmpeg Stream" << std::endl;
 
-        assembler.setNalCallback([&](const std::vector<uint8_t>& nal) {
-            if (nal.empty()) {
-                return;
-            }
-
-            const uint8_t nal_type = static_cast<uint8_t>(nal[0] & 0x1F);
-            switch (nal_type) {
-                case 7:
-                    ++nal_sps;
-                    decoder_seen_sps = true;
-                    break;
-                case 8:
-                    ++nal_pps;
-                    decoder_seen_pps = true;
-                    break;
-                case 5:
-                    ++nal_idr;
-                    if (decoder_seen_sps.load() && decoder_seen_pps.load()) {
-                        decoder_synced = true;
-                    }
-                    break;
-                case 1:
-                    ++nal_non_idr;
-                    break;
-                default:
-                    ++nal_other;
-                    break;
-            }
-
-#ifdef TELLO_HAS_FFMPEG
-            if (decoder_ready) {
-                const bool is_parameter_set = (nal_type == 7 || nal_type == 8);
-                const bool is_idr = (nal_type == 5);
-                const bool allow_decode = is_parameter_set || is_idr || decoder_synced.load();
-                if (allow_decode) {
-                    (void)decoder.decodeNal(nal);
-                } else {
-                    ++nal_decode_gated;
-                }
-            }
-#endif
-        });
-
-        receiver.setPacketCallback([&assembler](const std::vector<uint8_t>& packet) {
-            assembler.pushPacket(packet);
-        });
-        const tello::ResponseCode start_rc = receiver.start("0.0.0.0", 11111, 500);
-        std::cout << "[tello_cli] video_receiver.start: " << responseCodeToString(start_rc) << std::endl;
+        tello::VideoStreamReaderFfmpeg stream_reader;
+        const std::string stream_url = "udp://@0.0.0.0:11111?overrun_nonfatal=1&fifo_size=5000000";
+        const tello::ResponseCode start_rc = stream_reader.start(stream_url);
+        std::cout << "[tello_cli] ffmpeg_stream_reader.start: " << responseCodeToString(start_rc) << std::endl;
         if (start_rc != tello::ResponseCode::OK) {
             (void)client.streamOff();
             client.shutdown();
@@ -374,7 +319,7 @@ int main(int argc, char** argv) {
         const tello::ResponseCode state_start_rc = state_receiver.start("0.0.0.0", 8890, 500);
         std::cout << "[tello_cli] state_receiver.start: " << responseCodeToString(state_start_rc) << std::endl;
         if (state_start_rc != tello::ResponseCode::OK) {
-            receiver.stop();
+            stream_reader.stop();
             (void)client.streamOff();
             client.shutdown();
             return 5;
@@ -383,22 +328,6 @@ int main(int argc, char** argv) {
         uint64_t last_count = 0;
         const int64_t stall_age_threshold_ms = std::max<int64_t>(3000, static_cast<int64_t>(options.interval_ms) * 3);
         const int64_t recovery_cooldown_ms = 3000;
-        tello::VideoPipelineRecoveryOptions video_recovery_options;
-        video_recovery_options.bind_ip = "0.0.0.0";
-        video_recovery_options.video_port = 11111;
-        video_recovery_options.receiver_timeout_ms = 500;
-        tello::VideoPipelineRecoveryHooks video_recovery_hooks;
-        video_recovery_hooks.before_restart = [&]() {
-            nal_sps = 0;
-            nal_pps = 0;
-            nal_idr = 0;
-            nal_non_idr = 0;
-            nal_other = 0;
-            nal_decode_gated = 0;
-            decoder_seen_sps = false;
-            decoder_seen_pps = false;
-            decoder_synced = false;
-        };
 
         while (g_keep_running.load()) {
             if (shouldStopByDuration()) {
@@ -409,36 +338,25 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(options.interval_ms));
             ++attempt;
 
-            const tello::VideoReceiver::VideoStats stats = receiver.getVideoStats();
-            const tello::VideoStreamAssembler::Stats assembler_stats = assembler.getStats();
+            const tello::VideoStreamReaderFfmpeg::Stats stream_stats = stream_reader.getStats();
             const tello::StateReceiver::TelemetryStats telemetry_stats = state_receiver.getTelemetryStats();
             const bool telemetry_available = state_receiver.hasReceivedState();
             const tello::TelloState telemetry_state =
                 telemetry_available ? state_receiver.getLatestState() : tello::TelloState{};
-            const uint64_t count = stats.packets_total;
+            const uint64_t count = stream_stats.packets_read;
             const uint64_t delta = count - last_count;
 
-#ifdef TELLO_HAS_FFMPEG
-            const tello::VideoDecoderFfmpeg::Stats decoder_stats = decoder.getStats();
-#endif
-
             std::cout << "[tello_cli] attempt=" << attempt
-                      << " packets_total=" << count
+                      << " backend=ffmpeg_stream"
+                      << " packets_read=" << count
                       << " delta=" << delta
-                      << " pps=" << stats.rx_pps_ema
-                      << " bytes_total=" << stats.bytes_total
-                      << " age_ms=" << stats.last_packet_age_ms
-                      << " timeouts=" << stats.recv_timeouts
-                      << " errors=" << stats.recv_errors
-                      << " nal_units=" << assembler_stats.nal_units_out
-                      << " nal_sps=" << nal_sps.load()
-                      << " nal_pps=" << nal_pps.load()
-                      << " nal_idr=" << nal_idr.load()
-                      << " nal_nonidr=" << nal_non_idr.load()
-                      << " nal_other=" << nal_other.load()
-                      << " nal_gated=" << nal_decode_gated.load()
-                      << " parser_resyncs=" << assembler_stats.parse_resyncs
-                      << " buffered_bytes=" << assembler_stats.buffered_bytes
+                      << " bytes_read=" << stream_stats.bytes_read
+                      << " frame_age_ms=" << stream_stats.last_frame_age_ms
+                      << " frames=" << stream_stats.frames_decoded
+                      << " decode_fps=" << stream_stats.decode_fps_ema
+                      << " decode_errors=" << stream_stats.decode_errors
+                      << " frame_size=" << stream_stats.frame_width << "x" << stream_stats.frame_height
+                      << " keyframes=" << stream_stats.keyframes
                       << " | state_age_ms=" << telemetry_stats.last_packet_age_ms
                       << " state_hz=" << telemetry_stats.rx_hz_ema;
             if (telemetry_available) {
@@ -450,55 +368,46 @@ int main(int argc, char** argv) {
             } else {
                 std::cout << " state=waiting";
             }
-            std::cout
-#ifdef TELLO_HAS_FFMPEG
-                      << " dec_frames=" << decoder_stats.frames_decoded
-                      << " dec_fps=" << decoder_stats.decode_fps_ema
-                      << " dec_errors=" << decoder_stats.decode_errors
-#endif
-                      << std::endl;
+            std::cout << std::endl;
 
-            const std::string err = receiver.getLastError();
+            const std::string err = stream_reader.getLastError();
             if (!err.empty()) {
-                std::cout << "[tello_cli] video_last_error=\"" << err << "\"" << std::endl;
+                std::cout << "[tello_cli] ffmpeg_stream_last_error=\"" << err << "\"" << std::endl;
             }
 
-            const tello::VideoPipelineRecoveryResult recovery_result =
-                tello::VideoPipelineRecovery::recoverIfStalled(
-                    client,
-                    receiver,
-                    assembler,
-                    stats.last_packet_age_ms,
+            tello::TelloClient::VideoRecoveryStatus recovery =
+                client.recoverVideoStreamIfStalled(
+                    stream_stats.last_frame_age_ms,
                     stall_age_threshold_ms,
-                    recovery_cooldown_ms,
-                    video_recovery_options,
-                    video_recovery_hooks
-#ifdef TELLO_HAS_FFMPEG
-                    ,
-                    &decoder,
-                    &decoder_ready
-#endif
-                );
-            const tello::TelloClient::VideoRecoveryStatus recovery = recovery_result.session;
-            const bool video_pipeline_restarted = recovery_result.video_pipeline_restarted;
-            const tello::ResponseCode video_restart_rc = recovery_result.video_restart_result;
-
-            if (recovery_result.power_cycle_recovery_used) {
+                    recovery_cooldown_ms);
+            bool power_cycle_recovery_used = false;
+            if (recovery.attempted
+                && recovery.stage == "battery_probe"
+                && !recovery.command_channel_available) {
                 std::cout << "[tello_cli] command channel unavailable; attempting power-cycle recovery..." << std::endl;
+                recovery = client.recoverAfterPowerCycle();
+                power_cycle_recovery_used = true;
             }
 
-            if (recovery.attempted && video_restart_rc != tello::ResponseCode::OK) {
-                std::cout << "[tello_cli] video pipeline restart: "
-                          << responseCodeToString(video_restart_rc) << std::endl;
-            } else if (video_pipeline_restarted) {
-                last_count = 0;
-                std::cout << "[tello_cli] video pipeline restart: OK" << std::endl;
+            bool video_pipeline_restarted = false;
+            tello::ResponseCode video_restart_rc = tello::ResponseCode::OK;
+            if (shouldRestartLocalVideoPipeline(recovery)) {
+                stream_reader.stop();
+                video_restart_rc = stream_reader.start(stream_url);
+                video_pipeline_restarted = (video_restart_rc == tello::ResponseCode::OK);
+                if (video_pipeline_restarted) {
+                    last_count = 0;
+                    std::cout << "[tello_cli] ffmpeg stream reader restart: OK" << std::endl;
+                } else {
+                    std::cout << "[tello_cli] ffmpeg stream reader restart: "
+                              << responseCodeToString(video_restart_rc) << std::endl;
+                }
             }
 
             tello::TelloClient::ConnectionEvent event = tello::TelloClient::ConnectionEvent::NONE;
 
             if (recovery.attempted) {
-                std::cout << "[tello_cli] video stall detected (age_ms=" << stats.last_packet_age_ms
+                std::cout << "[tello_cli] video stall detected (age_ms=" << stream_stats.last_frame_age_ms
                           << "), attempting stream recovery..." << std::endl;
                 std::cout << "[tello_cli] streamOn(recover): " << responseCodeToString(recovery.result)
                           << " | stage=" << recovery.stage
@@ -528,27 +437,36 @@ int main(int argc, char** argv) {
                     event_str = "LOST";
                 } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
                     event_str = "RESTORED";
+                } else if (recovery.attempted) {
+                    event_str = power_cycle_recovery_used ? "VIDEO_POWER_RECOVERY" : "VIDEO_RECOVERY";
                 }
+
+                tello::MetricsCollector::VideoTransportStats rx_stats{};
+                rx_stats.packets_total = stream_stats.packets_read;
+                rx_stats.bytes_total = stream_stats.bytes_read;
+                rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
+                rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
+
+                tello::MetricsCollector::VideoAssemblyStats nal_stats{};
+                nal_stats.packets_in = stream_stats.packets_read;
+                nal_stats.bytes_in = stream_stats.bytes_read;
+                nal_stats.nal_units_out = stream_stats.frames_decoded;
+
+                tello::MetricsCollector::VideoDecodeStats decoder_stats{};
+                decoder_stats.frames_decoded = stream_stats.frames_decoded;
+                decoder_stats.decode_errors = stream_stats.decode_errors;
+                decoder_stats.decode_fps_ema = stream_stats.decode_fps_ema;
 
                 metrics.setElapsedMs(elapsed_ms);
                 metrics.setAttempt(static_cast<uint64_t>(attempt));
                 metrics.updateTelemetryStats(telemetry_stats);
                 metrics.updateTelemetryState(telemetry_state, telemetry_available);
-                metrics.updateVideoReceiverStats(stats);
+                metrics.updateVideoTransportStats(rx_stats);
                 metrics.setVideoPacketDelta(delta);
-                metrics.updateVideoAssemblerStats(assembler_stats);
-                metrics.updateNalClassificationStats(
-                    nal_sps.load(),
-                    nal_pps.load(),
-                    nal_idr.load(),
-                    nal_non_idr.load(),
-                    nal_other.load(),
-                    nal_decode_gated.load());
-#ifdef TELLO_HAS_FFMPEG
+                metrics.updateVideoAssemblerStats(nal_stats);
+                metrics.updateNalClassificationStats(0, 0, 0, 0, 0, 0);
                 metrics.updateDecoderStats(decoder_stats);
-#else
-                metrics.updateDecoderStats(tello::VideoDecoderFfmpeg::Stats{});
-#endif
+                metrics.updateFrameInfo(stream_stats.frame_width, stream_stats.frame_height, false);
                 metrics.recordRecoveryEvent(
                     recovery.attempted,
                     recovery.result,
@@ -587,7 +505,7 @@ int main(int argc, char** argv) {
         }
 
         state_receiver.stop();
-        receiver.stop();
+        stream_reader.stop();
         const tello::ResponseCode stream_off_rc = client.streamOff();
         std::cout << "[tello_cli] streamOff: " << responseCodeToString(stream_off_rc) << std::endl;
         client.shutdown();

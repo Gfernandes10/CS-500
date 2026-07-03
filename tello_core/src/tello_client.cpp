@@ -45,6 +45,7 @@ TelloClient::TelloClient()
     command_socket_(nullptr),
     command_executor_(nullptr),
     foreground_command_requests_(0),
+    last_command_mutex_wait_ms_(0),
     keepalive_running_(false),
     keepalive_thread_(),
     keepalive_mutex_(),
@@ -363,7 +364,10 @@ ResponseCode TelloClient::getSerialNumber(std::string& response) {
 
 ResponseCode TelloClient::sendCommand(const std::string& command) {
     ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    const auto mutex_wait_started_at = std::chrono::steady_clock::now();
     std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+    last_command_mutex_wait_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - mutex_wait_started_at).count());
 
     if (!initialized_ || command_executor_ == nullptr) {
         return ResponseCode::ERROR;
@@ -448,7 +452,10 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
 
 ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, std::string& response) {
     ForegroundCommandScope foreground_scope(foreground_command_requests_);
+    const auto mutex_wait_started_at = std::chrono::steady_clock::now();
     std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+    last_command_mutex_wait_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - mutex_wait_started_at).count());
 
     response.clear();
     if (!initialized_ || command_executor_ == nullptr) {
@@ -555,7 +562,15 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
 
 ResponseCode TelloClient::sendCommandNoWait(const std::string& command) {
     ForegroundCommandScope foreground_scope(foreground_command_requests_);
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+    const auto mutex_wait_started_at = std::chrono::steady_clock::now();
+    std::unique_lock<std::recursive_mutex> lock(command_mutex_, std::try_to_lock);
+    last_command_mutex_wait_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - mutex_wait_started_at).count());
+
+    if (!lock.owns_lock()) {
+        last_command_mutex_wait_ms_.store(-1);
+        return ResponseCode::TIMEOUT;
+    }
 
     if (!initialized_ || command_executor_ == nullptr) {
         return ResponseCode::ERROR;
@@ -601,6 +616,18 @@ ResponseCode TelloClient::startSdkKeepalive(int32_t interval_ms, const std::stri
 }
 
 void TelloClient::stopSdkKeepalive() {
+    requestSdkKeepaliveStop();
+
+    if (keepalive_thread_.joinable()) {
+        if (std::this_thread::get_id() == keepalive_thread_.get_id()) {
+            keepalive_thread_.detach();
+        } else {
+            keepalive_thread_.join();
+        }
+    }
+}
+
+void TelloClient::requestSdkKeepaliveStop() {
     {
         std::lock_guard<std::mutex> lock(keepalive_mutex_);
         if (!keepalive_running_.load()) {
@@ -611,17 +638,14 @@ void TelloClient::stopSdkKeepalive() {
     }
 
     keepalive_cv_.notify_all();
-    if (keepalive_thread_.joinable()) {
-        if (std::this_thread::get_id() == keepalive_thread_.get_id()) {
-            keepalive_thread_.detach();
-        } else {
-            keepalive_thread_.join();
-        }
-    }
 }
 
 bool TelloClient::isSdkKeepaliveRunning() const {
     return keepalive_running_.load();
+}
+
+int64_t TelloClient::getLastCommandMutexWaitMs() const {
+    return last_command_mutex_wait_ms_.load();
 }
 
 TelloClient::KeepaliveStats TelloClient::getSdkKeepaliveStats() const {
@@ -711,30 +735,23 @@ void TelloClient::keepaliveLoop() {
 }
 
 bool TelloClient::isInitialized() const {
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
-    return initialized_;
+    return initialized_.load();
 }
 
 TelloClient::ConnectionState TelloClient::getConnectionState() const {
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
-    return connection_state_;
+    return connection_state_.load();
 }
 
 TelloClient::ConnectionEvent TelloClient::consumeConnectionEvent() {
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
-    const ConnectionEvent evt = pending_event_;
-    pending_event_ = ConnectionEvent::NONE;
-    return evt;
+    return pending_event_.exchange(ConnectionEvent::NONE);
 }
 
 int32_t TelloClient::getConsecutiveFailures() const {
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
-    return consecutive_failures_;
+    return consecutive_failures_.load();
 }
 
 int32_t TelloClient::getLastOutageFailures() const {
-    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
-    return last_outage_failures_;
+    return last_outage_failures_.load();
 }
 
 TelloClient::ReliabilityConfig TelloClient::getReliabilityConfig() const {
@@ -788,23 +805,23 @@ std::shared_ptr<CommandExecutor> TelloClient::getCommandExecutor() const {
 }
 
 void TelloClient::markCommandSuccess() {
-    const int32_t failures_before_recovery = consecutive_failures_;
-    consecutive_failures_ = 0;
-    if (connection_state_ != ConnectionState::CONNECTED) {
-        if (connection_state_ == ConnectionState::RECOVERING) {
-            last_outage_failures_ = failures_before_recovery;
-            pending_event_ = ConnectionEvent::RESTORED;
+    const int32_t failures_before_recovery = consecutive_failures_.exchange(0);
+    const ConnectionState previous_state = connection_state_.load();
+    if (previous_state != ConnectionState::CONNECTED) {
+        if (previous_state == ConnectionState::RECOVERING) {
+            last_outage_failures_.store(failures_before_recovery);
+            pending_event_.store(ConnectionEvent::RESTORED);
         }
-        connection_state_ = ConnectionState::CONNECTED;
+        connection_state_.store(ConnectionState::CONNECTED);
     }
 }
 
 void TelloClient::markCommandFailure() {
-    ++consecutive_failures_;
-    if (connection_state_ == ConnectionState::CONNECTED) {
-        pending_event_ = ConnectionEvent::LOST;
+    consecutive_failures_.fetch_add(1);
+    if (connection_state_.load() == ConnectionState::CONNECTED) {
+        pending_event_.store(ConnectionEvent::LOST);
     }
-    connection_state_ = ConnectionState::RECOVERING;
+    connection_state_.store(ConnectionState::RECOVERING);
 }
 
 } // namespace tello

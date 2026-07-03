@@ -1,11 +1,7 @@
 #include "tello/tello_client.hpp"
 #include "tello/metrics.hpp"
 #include "tello/state_receiver.hpp"
-#include "tello/video_decoder_ffmpeg.hpp"
-#include "tello/video_pipeline_recovery.hpp"
-#include "tello/video_receiver.hpp"
 #include "tello/video_stream_reader_ffmpeg.hpp"
-#include "tello/video_stream_assembler.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -34,6 +30,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
 #include <QSignalBlocker>
@@ -47,8 +44,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
+#include <deque>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -87,6 +87,15 @@ std::string connectionStateToString(tello::TelloClient::ConnectionState state) {
         default:
             return "UNKNOWN";
     }
+}
+
+bool shouldRestartLocalVideoPipeline(const tello::TelloClient::VideoRecoveryStatus& status) {
+    if (!status.attempted || status.result != tello::ResponseCode::OK) {
+        return false;
+    }
+    return status.stage == "power_streamon"
+        || status.stage == "streamon_after_reinit"
+        || status.stage == "streamon_after_command";
 }
 
 QString nowClockString() {
@@ -409,6 +418,7 @@ public:
         rc_stream_timer_ = new QTimer(this);
         state_view_timer_ = new QTimer(this);
         vision_view_timer_ = new QTimer(this);
+        startCommandWorker();
 
         connect(connect_btn, &QPushButton::clicked, this, [this]() { (void)connectSdk(); });
         connect(disconnect_btn, &QPushButton::clicked, this, [this]() { disconnectSdk(); });
@@ -453,6 +463,7 @@ public:
         stopKeyboardRcWorker("panel-shutdown");
         stopVisionPipeline();
         setRcStreamingEnabled(false, "panel shutdown");
+        stopCommandWorker();
         closeCsv();
         state_receiver_.stop();
         client_.shutdown();
@@ -514,6 +525,75 @@ private:
         int64_t elapsed_ms = 0;
     };
 
+    struct AsyncCommandResult {
+        std::string command;
+        QString source;
+        tello::ResponseCode rc = tello::ResponseCode::ERROR;
+        QString response;
+        QString state;
+        int64_t elapsed_ms = 0;
+        bool critical = false;
+        bool was_auto_refresh_active = false;
+    };
+
+    struct AsyncRecoveryResult {
+        tello::TelloClient::VideoRecoveryStatus recovery;
+        bool power_cycle_recovery_used = false;
+    };
+
+    void startCommandWorker() {
+        std::lock_guard<std::mutex> lock(command_worker_mutex_);
+        if (command_worker_running_) {
+            return;
+        }
+        command_worker_stop_ = false;
+        command_worker_running_ = true;
+        command_worker_thread_ = std::thread([this]() { commandWorkerLoop(); });
+    }
+
+    void stopCommandWorker() {
+        {
+            std::lock_guard<std::mutex> lock(command_worker_mutex_);
+            command_worker_stop_ = true;
+        }
+        command_worker_cv_.notify_all();
+        if (command_worker_thread_.joinable()) {
+            command_worker_thread_.join();
+        }
+        command_worker_running_ = false;
+    }
+
+    void enqueueCommandWorkerTask(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(command_worker_mutex_);
+            command_worker_tasks_.push_back(std::move(task));
+            command_worker_pending_.fetch_add(1);
+        }
+        command_worker_cv_.notify_one();
+    }
+
+    void commandWorkerLoop() {
+        while (true) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(command_worker_mutex_);
+                command_worker_cv_.wait(lock, [this]() {
+                    return command_worker_stop_ || !command_worker_tasks_.empty();
+                });
+                if (command_worker_stop_ && command_worker_tasks_.empty()) {
+                    break;
+                }
+                task = std::move(command_worker_tasks_.front());
+                command_worker_tasks_.pop_front();
+            }
+
+            if (task) {
+                task();
+            }
+            command_worker_pending_.fetch_sub(1);
+        }
+    }
+
     void buildReadGroup(QVBoxLayout* root) {
         auto* g = new QGroupBox("Read Commands", this);
         auto* l = new QHBoxLayout(g);
@@ -549,6 +629,7 @@ private:
 
         csv_path_edit_ = new QLineEdit("control_panel_commands.csv", g);
         state_record_path_edit_ = new QLineEdit("state_recording.csv", g);
+        loadPersistentCsvPaths();
         auto* start_logging_btn = new QPushButton("Start Recording", g);
         auto* stop_logging_btn = new QPushButton("Stop Recording", g);
         auto* clear_logging_btn = new QPushButton("Clear Recording", g);
@@ -584,6 +665,7 @@ private:
                 "CSV (*.csv);;All files (*)");
             if (!picked.isEmpty()) {
                 csv_path_edit_->setText(picked);
+                savePersistentCsvPaths();
             }
         });
 
@@ -595,10 +677,34 @@ private:
                 "CSV (*.csv);;All files (*)");
             if (!picked.isEmpty()) {
                 state_record_path_edit_->setText(picked);
+                savePersistentCsvPaths();
             }
         });
 
         root->addWidget(g);
+    }
+
+    void loadPersistentCsvPaths() {
+        QSettings settings;
+        if (csv_path_edit_ != nullptr) {
+            csv_path_edit_->setText(
+                settings.value("logging/gui_metrics_csv_path", csv_path_edit_->text()).toString());
+        }
+        if (state_record_path_edit_ != nullptr) {
+            state_record_path_edit_->setText(
+                settings.value("logging/state_csv_path", state_record_path_edit_->text()).toString());
+        }
+    }
+
+    void savePersistentCsvPaths() const {
+        QSettings settings;
+        if (csv_path_edit_ != nullptr) {
+            settings.setValue("logging/gui_metrics_csv_path", csv_path_edit_->text().trimmed());
+        }
+        if (state_record_path_edit_ != nullptr) {
+            settings.setValue("logging/state_csv_path", state_record_path_edit_->text().trimmed());
+        }
+        settings.sync();
     }
 
     void buildControlProfileGroup(QVBoxLayout* root) {
@@ -1154,7 +1260,7 @@ private:
         updateKeyboardControlPreview();
 
         if (enabled) {
-            client_.stopSdkKeepalive();
+            client_.requestSdkKeepaliveStop();
             appendLog("sdk keepalive paused while keyboard RC worker is active");
             startKeyboardRcWorker();
             if (rc_stream_timer_ != nullptr) {
@@ -1395,18 +1501,14 @@ private:
         auto* right_host = new QWidget(g);
         auto* right = new QVBoxLayout(right_host);
         vision_status_label_ = new QLabel("status: idle", right_host);
-        vision_rx_label_ = new QLabel("rx packets: 0", right_host);
-        vision_nal_label_ = new QLabel("nal units: 0", right_host);
+        vision_rx_label_ = new QLabel("stream packets: 0", right_host);
+        vision_nal_label_ = new QLabel("backend: ffmpeg stream", right_host);
         vision_fps_label_ = new QLabel("decode fps: 0.00", right_host);
         vision_size_label_ = new QLabel("size: 0x0", right_host);
         vision_decode_err_label_ = new QLabel("decode errors: 0", right_host);
         vision_frame_info_label_ = new QLabel("frames: 0 | keyframes: 0", right_host);
-        vision_backend_combo_ = new QComboBox(right_host);
-        vision_backend_combo_->addItems({"FFmpeg Stream", "Manual NAL"});
 
         right->addWidget(vision_status_label_);
-        right->addWidget(new QLabel("backend:", right_host));
-        right->addWidget(vision_backend_combo_);
         right->addWidget(vision_rx_label_);
         right->addWidget(vision_nal_label_);
         right->addWidget(vision_fps_label_);
@@ -1523,11 +1625,6 @@ private:
             std::chrono::steady_clock::now() - tick_started_at).count();
     }
 
-#ifdef TELLO_HAS_FFMPEG
-    bool useFfmpegStreamBackend() const {
-        return vision_backend_combo_ == nullptr || vision_backend_combo_->currentText() == "FFmpeg Stream";
-    }
-
     void publishVisionRgbFrame(
         const uint8_t* rgb_data,
         int32_t width,
@@ -1569,10 +1666,8 @@ private:
         }
         vision_latest_frame_sequence_.fetch_add(1);
     }
-#endif
 
     void refreshVisionView() {
-#ifdef TELLO_HAS_FFMPEG
         const auto tick_started_at = std::chrono::steady_clock::now();
         if (has_last_vision_gui_tick_) {
             last_gui_vision_tick_delay_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1592,70 +1687,34 @@ private:
             ensureSdkKeepaliveRunning("vision");
             writeVisionMetricsRowIfDue();
 
-            if (vision_stream_backend_active_) {
-                const auto stream_stats = video_stream_reader_.getStats();
-                if (vision_rx_label_ != nullptr) {
-                    vision_rx_label_->setText(QString("stream packets: %1")
-                                                  .arg(static_cast<qulonglong>(stream_stats.packets_read)));
-                }
-                if (vision_nal_label_ != nullptr) {
-                    vision_nal_label_->setText("backend: ffmpeg stream");
-                }
-                if (vision_fps_label_ != nullptr) {
-                    vision_fps_label_->setText(QString("decode fps: %1")
-                                                   .arg(stream_stats.decode_fps_ema, 0, 'f', 2));
-                }
-                if (vision_size_label_ != nullptr) {
-                    vision_size_label_->setText(QString("size: %1x%2")
-                                                    .arg(stream_stats.frame_width)
-                                                    .arg(stream_stats.frame_height));
-                }
-                if (vision_decode_err_label_ != nullptr) {
-                    vision_decode_err_label_->setText(QString("decode errors: %1")
-                                                          .arg(static_cast<qulonglong>(stream_stats.decode_errors)));
-                }
-                if (vision_frame_info_label_ != nullptr) {
-                    vision_frame_info_label_->setText(
-                        QString("frames: %1 | keyframes: %2")
-                            .arg(static_cast<qulonglong>(stream_stats.frames_decoded))
-                            .arg(static_cast<qulonglong>(stream_stats.keyframes)));
-                }
-            } else {
-                const auto rx_stats = video_receiver_.getVideoStats();
-                maybeRecoverVisionPipeline(rx_stats);
+            const auto stream_stats = video_stream_reader_.getStats();
+            maybeRecoverVisionPipeline(stream_stats.last_frame_age_ms);
 
-                const auto refreshed_rx_stats = video_receiver_.getVideoStats();
-                const auto refreshed_nal_stats = video_assembler_.getStats();
-                const auto refreshed_dec_stats = video_decoder_.getStats();
-
-                if (vision_rx_label_ != nullptr) {
-                    vision_rx_label_->setText(QString("rx packets: %1 (ema=%2 pps)")
-                                                  .arg(static_cast<qulonglong>(refreshed_rx_stats.packets_total))
-                                                  .arg(refreshed_rx_stats.rx_pps_ema, 0, 'f', 1));
-                }
-                if (vision_nal_label_ != nullptr) {
-                    vision_nal_label_->setText(QString("nal units: %1")
-                                                   .arg(static_cast<qulonglong>(refreshed_nal_stats.nal_units_out)));
-                }
-                if (vision_fps_label_ != nullptr) {
-                    vision_fps_label_->setText(QString("decode fps: %1")
-                                                   .arg(refreshed_dec_stats.decode_fps_ema, 0, 'f', 2));
-                }
-                if (vision_size_label_ != nullptr) {
-                    vision_size_label_->setText(QString("size: %1x%2")
-                                                    .arg(vision_frame_width_.load())
-                                                    .arg(vision_frame_height_.load()));
-                }
-                if (vision_decode_err_label_ != nullptr) {
-                    vision_decode_err_label_->setText(QString("decode errors: %1")
-                                                          .arg(static_cast<qulonglong>(refreshed_dec_stats.decode_errors)));
-                }
-                if (vision_frame_info_label_ != nullptr) {
-                    vision_frame_info_label_->setText(
-                        QString("frames: %1 | keyframes: %2")
-                            .arg(static_cast<qulonglong>(refreshed_dec_stats.frames_decoded))
-                            .arg(static_cast<qulonglong>(vision_keyframes_.load())));
-                }
+            if (vision_rx_label_ != nullptr) {
+                vision_rx_label_->setText(QString("stream packets: %1")
+                                              .arg(static_cast<qulonglong>(stream_stats.packets_read)));
+            }
+            if (vision_nal_label_ != nullptr) {
+                vision_nal_label_->setText("backend: ffmpeg stream");
+            }
+            if (vision_fps_label_ != nullptr) {
+                vision_fps_label_->setText(QString("decode fps: %1")
+                                               .arg(stream_stats.decode_fps_ema, 0, 'f', 2));
+            }
+            if (vision_size_label_ != nullptr) {
+                vision_size_label_->setText(QString("size: %1x%2")
+                                                .arg(stream_stats.frame_width)
+                                                .arg(stream_stats.frame_height));
+            }
+            if (vision_decode_err_label_ != nullptr) {
+                vision_decode_err_label_->setText(QString("decode errors: %1")
+                                                      .arg(static_cast<qulonglong>(stream_stats.decode_errors)));
+            }
+            if (vision_frame_info_label_ != nullptr) {
+                vision_frame_info_label_->setText(
+                    QString("frames: %1 | keyframes: %2")
+                        .arg(static_cast<qulonglong>(stream_stats.frames_decoded))
+                        .arg(static_cast<qulonglong>(stream_stats.keyframes)));
             }
         }
 
@@ -1687,21 +1746,18 @@ private:
 
         QImage composed = frame_to_show.copy();
         if (vision_overlay_enabled_) {
-            const auto dec_stats = video_decoder_.getStats();
-            const auto rx_stats = video_receiver_.getVideoStats();
-            const auto nal_stats = video_assembler_.getStats();
+            const auto stream_stats = video_stream_reader_.getStats();
 
             QPainter p(&composed);
             p.setRenderHint(QPainter::Antialiasing, true);
             p.setPen(QPen(QColor(0, 255, 110), 1));
             p.drawText(10, 22, QString("fps=%1 frames=%2 keyframes=%3")
-                                .arg(dec_stats.decode_fps_ema, 0, 'f', 2)
-                                .arg(static_cast<qulonglong>(dec_stats.frames_decoded))
-                                .arg(static_cast<qulonglong>(vision_keyframes_.load())));
-            p.drawText(10, 42, QString("packets=%1 nal=%2 dec_errors=%3")
-                                .arg(static_cast<qulonglong>(rx_stats.packets_total))
-                                .arg(static_cast<qulonglong>(nal_stats.nal_units_out))
-                                .arg(static_cast<qulonglong>(dec_stats.decode_errors)));
+                                .arg(stream_stats.decode_fps_ema, 0, 'f', 2)
+                                .arg(static_cast<qulonglong>(stream_stats.frames_decoded))
+                                .arg(static_cast<qulonglong>(stream_stats.keyframes)));
+            p.drawText(10, 42, QString("packets=%1 dec_errors=%2")
+                                .arg(static_cast<qulonglong>(stream_stats.packets_read))
+                                .arg(static_cast<qulonglong>(stream_stats.decode_errors)));
             p.drawText(10, 62, QString("state=%1 controls: Pause, Snapshot, Overlay")
                                 .arg(vision_paused_ ? "PAUSED" : "LIVE"));
         }
@@ -1717,18 +1773,9 @@ private:
         }
         last_vision_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - tick_started_at).count();
-#else
-        if (vision_status_label_ != nullptr) {
-            vision_status_label_->setText("status: FFmpeg backend not available");
-        }
-#endif
     }
 
-#ifdef TELLO_HAS_FFMPEG
     void resetVisionRuntimeStateForRestart() {
-        video_decoder_seen_sps_.store(false);
-        video_decoder_seen_pps_.store(false);
-        video_decoder_synced_.store(false);
         vision_keyframes_.store(0);
         vision_frame_width_.store(0);
         vision_frame_height_.store(0);
@@ -1753,93 +1800,142 @@ private:
     }
 
     void writeVisionRecoveryMetricsRow(
-        const tello::VideoPipelineRecoveryResult& recovery,
-        const tello::VideoReceiver::VideoStats& rx_stats) {
+        const tello::TelloClient::VideoRecoveryStatus& recovery,
+        bool power_cycle_recovery_used,
+        const tello::VideoStreamReaderFfmpeg::Stats& stream_stats) {
         if (!isGuiCsvRecording()) {
             return;
         }
 
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - metrics_started_at_).count();
-        const auto nal_stats = video_assembler_.getStats();
-        const auto dec_stats = video_decoder_.getStats();
+
+        tello::MetricsCollector::VideoTransportStats rx_stats{};
+        rx_stats.packets_total = stream_stats.packets_read;
+        rx_stats.bytes_total = stream_stats.bytes_read;
+        rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
+        rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
+
+        tello::MetricsCollector::VideoAssemblyStats nal_stats{};
+        nal_stats.packets_in = stream_stats.packets_read;
+        nal_stats.bytes_in = stream_stats.bytes_read;
+        nal_stats.nal_units_out = stream_stats.frames_decoded;
+
+        tello::MetricsCollector::VideoDecodeStats dec_stats{};
+        dec_stats.frames_decoded = stream_stats.frames_decoded;
+        dec_stats.decode_errors = stream_stats.decode_errors;
+        dec_stats.decode_fps_ema = stream_stats.decode_fps_ema;
 
         ++metrics_attempt_;
         updateRuntimeMetricsContext();
         metrics_.setElapsedMs(elapsed_ms);
         metrics_.setAttempt(metrics_attempt_);
-        metrics_.updateVideoReceiverStats(rx_stats);
+        metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(0);
         metrics_.updateVideoAssemblerStats(nal_stats);
         metrics_.updateDecoderStats(dec_stats);
         metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
         metrics_.recordRecoveryEvent(
-            recovery.session.attempted,
-            recovery.session.result,
-            recovery.session.used_hard_recovery,
-            recovery.session.stage,
-            recovery.session.command_channel_available);
+            recovery.attempted,
+            recovery.result,
+            recovery.used_hard_recovery,
+            recovery.stage,
+            recovery.command_channel_available);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
-        metrics_.setEvent(recovery.power_cycle_recovery_used ? "vision_recovery:power_cycle" : "vision_recovery");
+        metrics_.setEvent(power_cycle_recovery_used ? "vision_recovery:power_cycle" : "vision_recovery");
         metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
         gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 
-    void maybeRecoverVisionPipeline(const tello::VideoReceiver::VideoStats& rx_stats) {
+    void maybeRecoverVisionPipeline(int64_t last_frame_age_ms) {
         if (!vision_pipeline_running_ || !sdk_ready_) {
+            return;
+        }
+        if (vision_recovery_in_progress_) {
             return;
         }
 
         constexpr int64_t kVisionStallThresholdMs = 3000;
-        constexpr int64_t kVisionRecoveryCooldownMs = 3000;
-        tello::VideoPipelineRecoveryOptions options;
-        options.bind_ip = "0.0.0.0";
-        options.video_port = 11111;
-        options.receiver_timeout_ms = 500;
-
-        tello::VideoPipelineRecoveryHooks hooks;
-        hooks.before_restart = [this]() {
-            resetVisionRuntimeStateForRestart();
-        };
-
-        const tello::VideoPipelineRecoveryResult recovery =
-            tello::VideoPipelineRecovery::recoverIfStalled(
-                client_,
-                video_receiver_,
-                video_assembler_,
-                rx_stats.last_packet_age_ms,
-                kVisionStallThresholdMs,
-                kVisionRecoveryCooldownMs,
-                options,
-                hooks,
-                &video_decoder_,
-                nullptr);
-
-        if (!recovery.session.attempted) {
+        if (last_frame_age_ms < kVisionStallThresholdMs) {
             return;
         }
 
-        if (recovery.session.command_channel_available || recovery.session.result == tello::ResponseCode::OK) {
+        constexpr int64_t kVisionRecoveryQueueCooldownMs = 3000;
+        const auto now = std::chrono::steady_clock::now();
+        if (has_last_vision_recovery_queue_) {
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_vision_recovery_queue_tp_).count();
+            if (elapsed_ms < kVisionRecoveryQueueCooldownMs) {
+                return;
+            }
+        }
+        has_last_vision_recovery_queue_ = true;
+        last_vision_recovery_queue_tp_ = now;
+
+        vision_recovery_in_progress_ = true;
+        appendLog(QString("vision recovery queued | last_frame_age_ms=%1").arg(last_frame_age_ms));
+        enqueueCommandWorkerTask([this, last_frame_age_ms]() {
+            AsyncRecoveryResult result;
+            constexpr int64_t kWorkerVisionStallThresholdMs = 3000;
+            constexpr int64_t kWorkerVisionRecoveryCooldownMs = 3000;
+            result.recovery = client_.recoverVideoStreamIfStalled(
+                last_frame_age_ms,
+                kWorkerVisionStallThresholdMs,
+                kWorkerVisionRecoveryCooldownMs);
+
+            if (result.recovery.attempted
+                && result.recovery.stage == "battery_probe"
+                && !result.recovery.command_channel_available) {
+                result.recovery = client_.recoverAfterPowerCycle();
+                result.power_cycle_recovery_used = true;
+            }
+
+            QMetaObject::invokeMethod(this, [this, result]() {
+                handleAsyncVisionRecoveryResult(result);
+            }, Qt::QueuedConnection);
+        });
+    }
+
+    void handleAsyncVisionRecoveryResult(const AsyncRecoveryResult& result) {
+        vision_recovery_in_progress_ = false;
+        const tello::TelloClient::VideoRecoveryStatus& recovery = result.recovery;
+        const bool power_cycle_recovery_used = result.power_cycle_recovery_used;
+
+        if (!recovery.attempted) {
+            return;
+        }
+
+        bool video_pipeline_restarted = false;
+        tello::ResponseCode video_restart_rc = tello::ResponseCode::OK;
+        if (shouldRestartLocalVideoPipeline(recovery)) {
+            resetVisionRuntimeStateForRestart();
+            video_stream_reader_.stop();
+            const std::string url = "udp://@0.0.0.0:11111?overrun_nonfatal=1&fifo_size=5000000";
+            video_restart_rc = video_stream_reader_.start(url);
+            video_pipeline_restarted = (video_restart_rc == tello::ResponseCode::OK);
+        }
+
+        if (recovery.command_channel_available || recovery.result == tello::ResponseCode::OK) {
             sdk_ready_ = true;
-        } else if (recovery.power_cycle_recovery_used) {
+        } else if (power_cycle_recovery_used) {
             sdk_ready_ = false;
         }
 
         appendLog(QString("vision recovery => %1 | stage=%2 | command_channel=%3 | hard=%4 | video_restart=%5")
-                      .arg(QString::fromStdString(responseCodeToString(recovery.session.result)))
-                      .arg(QString::fromStdString(recovery.session.stage))
-                      .arg(recovery.session.command_channel_available ? "available" : "unavailable")
-                      .arg(recovery.session.used_hard_recovery ? "yes" : "no")
-                      .arg(recovery.video_pipeline_restarted ? "yes" : "no"));
+                      .arg(QString::fromStdString(responseCodeToString(recovery.result)))
+                      .arg(QString::fromStdString(recovery.stage))
+                      .arg(recovery.command_channel_available ? "available" : "unavailable")
+                      .arg(recovery.used_hard_recovery ? "yes" : "no")
+                      .arg(video_pipeline_restarted ? "yes" : "no"));
 
-        if (recovery.video_restart_result != tello::ResponseCode::OK) {
+        if (video_restart_rc != tello::ResponseCode::OK) {
             appendLog("vision local pipeline restart failed => "
-                      + QString::fromStdString(responseCodeToString(recovery.video_restart_result)));
+                      + QString::fromStdString(responseCodeToString(video_restart_rc)));
         }
 
-        writeVisionRecoveryMetricsRow(recovery, rx_stats);
+        writeVisionRecoveryMetricsRow(recovery, power_cycle_recovery_used, video_stream_reader_.getStats());
         ensureSdkKeepaliveRunning("vision-recovery");
         updateStatusLabel();
     }
@@ -1848,25 +1944,29 @@ private:
         if (!ensureSdkReady()) {
             return false;
         }
+        appendLog("streamon (vision) queued on command worker");
+        enqueueCommandWorkerTask([this]() {
+            std::string response;
+            const auto command_started_at = std::chrono::steady_clock::now();
+            const auto rc = client_.sendCommandWithResponse("streamon", response);
+            const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - command_started_at).count();
+            const QString response_q = QString::fromStdString(response);
+            const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
 
-        std::string response;
-        const auto command_started_at = std::chrono::steady_clock::now();
-        const auto rc = client_.sendCommandWithResponse("streamon", response);
-        const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - command_started_at).count();
-        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
-        const QString response_q = QString::fromStdString(response);
-        const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
-
-        QString line = "streamon (vision) => " + rc_q;
-        if (!response.empty()) {
-            line += " | response=\"" + response_q + "\"";
-        }
-        line += " | state=" + state_q;
-        appendLog(line);
-        writeCommandMetricsRow("vision", "streamon", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
-
-        return startVisionPipeline();
+            QMetaObject::invokeMethod(this, [this, rc, response_q, state_q, command_elapsed_ms]() {
+                const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+                QString line = "streamon (vision) => " + rc_q;
+                if (!response_q.isEmpty()) {
+                    line += " | response=\"" + response_q + "\"";
+                }
+                line += " | state=" + state_q;
+                appendLog(line);
+                writeCommandMetricsRow("vision", "streamon", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
+                (void)startVisionPipeline();
+            }, Qt::QueuedConnection);
+        });
+        return true;
     }
 
     void stopVisionWithStreamOff() {
@@ -1875,23 +1975,27 @@ private:
         if (!sdk_ready_) {
             return;
         }
+        appendLog("streamoff (vision) queued on command worker");
+        enqueueCommandWorkerTask([this]() {
+            std::string response;
+            const auto command_started_at = std::chrono::steady_clock::now();
+            const auto rc = client_.sendCommandWithResponse("streamoff", response);
+            const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - command_started_at).count();
+            const QString response_q = QString::fromStdString(response);
+            const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
 
-        std::string response;
-        const auto command_started_at = std::chrono::steady_clock::now();
-        const auto rc = client_.sendCommandWithResponse("streamoff", response);
-        const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - command_started_at).count();
-        const QString rc_q = QString::fromStdString(responseCodeToString(rc));
-        const QString response_q = QString::fromStdString(response);
-        const QString state_q = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
-
-        QString line = "streamoff (vision) => " + rc_q;
-        if (!response.empty()) {
-            line += " | response=\"" + response_q + "\"";
-        }
-        line += " | state=" + state_q;
-        appendLog(line);
-        writeCommandMetricsRow("vision", "streamoff", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
+            QMetaObject::invokeMethod(this, [this, rc, response_q, state_q, command_elapsed_ms]() {
+                const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+                QString line = "streamoff (vision) => " + rc_q;
+                if (!response_q.isEmpty()) {
+                    line += " | response=\"" + response_q + "\"";
+                }
+                line += " | state=" + state_q;
+                appendLog(line);
+                writeCommandMetricsRow("vision", "streamoff", static_cast<double>(command_elapsed_ms), rc, response_q, state_q);
+            }, Qt::QueuedConnection);
+        });
     }
 
     bool startVisionPipeline() {
@@ -1902,10 +2006,6 @@ private:
             return false;
         }
 
-        video_assembler_.reset();
-        video_decoder_seen_sps_.store(false);
-        video_decoder_seen_pps_.store(false);
-        video_decoder_synced_.store(false);
         vision_keyframes_.store(0);
         vision_frame_width_.store(0);
         vision_frame_height_.store(0);
@@ -1916,108 +2016,20 @@ private:
         ui_frames_converted_.store(0);
         ui_frames_dropped_.store(0);
         ui_frames_displayed_.store(0);
-        vision_stream_backend_active_ = useFfmpegStreamBackend();
 
-        if (vision_stream_backend_active_) {
-            video_stream_reader_.setFrameCallback([this](const tello::VideoStreamReaderFfmpeg::DecodedFrame& frame) {
-                publishVisionRgbFrame(
-                    frame.rgb.data(),
-                    frame.width,
-                    frame.height,
-                    frame.rgb_stride,
-                    frame.is_key_frame);
-            });
-
-            const std::string url = "udp://@0.0.0.0:11111?overrun_nonfatal=1&fifo_size=5000000";
-            const auto stream_rc = video_stream_reader_.start(url);
-            if (stream_rc != tello::ResponseCode::OK) {
-                appendLog("vision start failed: ffmpeg stream reader start error");
-                vision_stream_backend_active_ = false;
-                return false;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(vision_frame_mutex_);
-                vision_latest_frame_ = QImage();
-                vision_paused_frame_ = QImage();
-            }
-            vision_paused_ = false;
-            if (vision_pause_btn_ != nullptr) {
-                vision_pause_btn_->setText("Pause");
-            }
-            vision_pipeline_running_ = true;
-            appendLog("vision pipeline started (FFmpeg stream backend)");
-            return true;
-        }
-
-        if (!video_decoder_.initialize()) {
-            appendLog("vision start failed: decoder initialize error");
-            return false;
-        }
-        video_decoder_.resetStats();
-
-        video_decoder_.setFrameCallback([this](const tello::VideoDecoderFfmpeg::DecodedFrameInfo& frame_info) {
-            if (frame_info.is_key_frame) {
-                vision_keyframes_.fetch_add(1);
-            }
-            vision_frame_width_.store(frame_info.width);
-            vision_frame_height_.store(frame_info.height);
-        });
-
-        video_decoder_.setFrameDataCallback([this](const tello::VideoDecoderFfmpeg::DecodedFrame& frame) {
-            if (frame.bgr.empty() || frame.info.width <= 0 || frame.info.height <= 0 || frame.bgr_stride <= 0) {
-                return;
-            }
-
-            QImage rgb(frame.info.width, frame.info.height, QImage::Format_RGB888);
-            for (int y = 0; y < frame.info.height; ++y) {
-                const uint8_t* src = frame.bgr.data() + (static_cast<size_t>(y) * static_cast<size_t>(frame.bgr_stride));
-                uint8_t* dst = rgb.scanLine(y);
-                for (int x = 0; x < frame.info.width; ++x) {
-                    const uint8_t b = src[x * 3 + 0];
-                    const uint8_t g = src[x * 3 + 1];
-                    const uint8_t r = src[x * 3 + 2];
-                    dst[x * 3 + 0] = r;
-                    dst[x * 3 + 1] = g;
-                    dst[x * 3 + 2] = b;
-                }
-            }
+        video_stream_reader_.setFrameCallback([this](const tello::VideoStreamReaderFfmpeg::DecodedFrame& frame) {
             publishVisionRgbFrame(
-                rgb.constBits(),
-                frame.info.width,
-                frame.info.height,
-                static_cast<int32_t>(rgb.bytesPerLine()),
-                frame.info.is_key_frame);
+                frame.rgb.data(),
+                frame.width,
+                frame.height,
+                frame.rgb_stride,
+                frame.is_key_frame);
         });
 
-        video_assembler_.setNalCallback([this](const std::vector<uint8_t>& nal) {
-            if (nal.empty()) {
-                return;
-            }
-
-            const uint8_t nal_type = static_cast<uint8_t>(nal[0] & 0x1F);
-            if (nal_type == 7) {
-                video_decoder_seen_sps_.store(true);
-            } else if (nal_type == 8) {
-                video_decoder_seen_pps_.store(true);
-            } else if (nal_type == 5 && video_decoder_seen_sps_.load() && video_decoder_seen_pps_.load()) {
-                video_decoder_synced_.store(true);
-            }
-
-            const bool allow_decode = (nal_type == 7 || nal_type == 8 || nal_type == 5 || video_decoder_synced_.load());
-            if (allow_decode) {
-                (void)video_decoder_.decodeNal(nal);
-            }
-        });
-
-        video_receiver_.setPacketCallback([this](const std::vector<uint8_t>& packet) {
-            video_assembler_.pushPacket(packet);
-        });
-
-        const auto recv_rc = video_receiver_.start("0.0.0.0", 11111, 500);
-        if (recv_rc != tello::ResponseCode::OK) {
-            appendLog("vision start failed: video receiver start error");
-            video_decoder_.shutdown();
+        const std::string url = "udp://@0.0.0.0:11111?overrun_nonfatal=1&fifo_size=5000000";
+        const auto stream_rc = video_stream_reader_.start(url);
+        if (stream_rc != tello::ResponseCode::OK) {
+            appendLog("vision start failed: ffmpeg stream reader start error");
             return false;
         }
 
@@ -2032,7 +2044,7 @@ private:
         }
 
         vision_pipeline_running_ = true;
-        appendLog("vision pipeline started (Manual NAL backend)");
+        appendLog("vision pipeline started (FFmpeg stream backend)");
         return true;
     }
 
@@ -2042,13 +2054,7 @@ private:
         }
 
         vision_pipeline_running_ = false;
-        if (vision_stream_backend_active_) {
-            video_stream_reader_.stop();
-        } else {
-            video_receiver_.stop();
-            video_decoder_.shutdown();
-        }
-        vision_stream_backend_active_ = false;
+        video_stream_reader_.stop();
 
         {
             std::lock_guard<std::mutex> lock(vision_frame_mutex_);
@@ -2098,32 +2104,6 @@ private:
             appendLog("snapshot save failed => " + file);
         }
     }
-#else
-    bool startVisionWithStreamOn() {
-        appendLog("vision not available: FFmpeg backend disabled");
-        return false;
-    }
-
-    void stopVisionWithStreamOff() {
-        appendLog("vision not available: FFmpeg backend disabled");
-    }
-
-    bool startVisionPipeline() {
-        appendLog("vision not available: FFmpeg backend disabled");
-        return false;
-    }
-
-    void stopVisionPipeline() {}
-
-    void toggleVisionPause() {
-        appendLog("vision not available: FFmpeg backend disabled");
-    }
-
-    void saveVisionSnapshot() {
-        appendLog("vision not available: FFmpeg backend disabled");
-    }
-#endif
-
     void appendLog(const QString& msg) {
         const QString timestamp = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
         log_view_->append("[" + nowClockString() + "] " + msg);
@@ -2232,6 +2212,8 @@ private:
 
     void setRcStreamingEnabled(bool enabled, const QString& reason) {
         if (enabled) {
+            client_.requestSdkKeepaliveStop();
+            appendLog("sdk keepalive paused while continuous RC stream is active");
             if (rc_stream_timer_ != nullptr) {
                 rc_stream_timer_->start(rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50);
             }
@@ -2244,6 +2226,11 @@ private:
             rc_stream_timer_->stop();
         }
         sendRcNeutralBestEffort(reason);
+        if (sdk_ready_ && !keyboard_control_active_) {
+            const auto keepalive_rc = client_.startSdkKeepalive(5000);
+            appendLog("sdk keepalive restart after RC stream => "
+                      + QString::fromStdString(responseCodeToString(keepalive_rc)));
+        }
         appendLog("continuous RC OFF (" + reason + ")");
         writeEventMetricsRow(QString("rc-stream:off:") + reason);
     }
@@ -2360,8 +2347,10 @@ private:
         }
         setRcStreamingEnabled(false, "disconnect");
         stopVisionPipeline();
+        stopCommandWorker();
         state_receiver_.stop();
         client_.shutdown();
+        startCommandWorker();
         sdk_ready_ = false;
         appendLog("disconnected");
         updateStatusLabel();
@@ -2377,6 +2366,9 @@ private:
 
     void ensureSdkKeepaliveRunning(const QString& reason) {
         if (client_.isSdkKeepaliveRunning() || !client_.isInitialized()) {
+            return;
+        }
+        if (keyboard_control_active_ || (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive())) {
             return;
         }
 
@@ -2517,6 +2509,7 @@ private:
     }
 
     void exportAllCsvs() {
+        savePersistentCsvPaths();
         appendLog("CSV export requested");
         exportGuiMetricsCsv();
         exportStateRecordingCsv();
@@ -2615,6 +2608,7 @@ private:
             state_plot_widget_ != nullptr ? state_plot_widget_->lastPaintDurationMs() : 0,
             last_vision_frame_mutex_wait_ms_,
             last_state_history_fetch_ms_,
+            client_.getLastCommandMutexWaitMs(),
             ui_frames_converted_.load(),
             ui_frames_dropped_.load(),
             ui_frames_displayed_.load(),
@@ -2690,7 +2684,6 @@ private:
         gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
 
-#ifdef TELLO_HAS_FFMPEG
     void writeVisionMetricsRowIfDue() {
         if (!isGuiCsvRecording() || !vision_pipeline_running_) {
             return;
@@ -2705,34 +2698,27 @@ private:
 
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - metrics_started_at_).count();
-        auto rx_stats = video_receiver_.getVideoStats();
-        auto nal_stats = video_assembler_.getStats();
-        auto dec_stats = video_decoder_.getStats();
-        std::string event = "vision";
+        const auto stream_stats = video_stream_reader_.getStats();
 
-        if (vision_stream_backend_active_) {
-            const auto stream_stats = video_stream_reader_.getStats();
-            rx_stats = tello::VideoReceiver::VideoStats{};
-            rx_stats.packets_total = stream_stats.packets_read;
-            rx_stats.bytes_total = stream_stats.bytes_read;
-            rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
-            rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
+        tello::MetricsCollector::VideoTransportStats rx_stats{};
+        rx_stats.packets_total = stream_stats.packets_read;
+        rx_stats.bytes_total = stream_stats.bytes_read;
+        rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
+        rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
 
-            nal_stats = tello::VideoStreamAssembler::Stats{};
-            nal_stats.packets_in = stream_stats.packets_read;
-            nal_stats.bytes_in = stream_stats.bytes_read;
-            nal_stats.nal_units_out = stream_stats.frames_decoded;
+        tello::MetricsCollector::VideoAssemblyStats nal_stats{};
+        nal_stats.packets_in = stream_stats.packets_read;
+        nal_stats.bytes_in = stream_stats.bytes_read;
+        nal_stats.nal_units_out = stream_stats.frames_decoded;
 
-            dec_stats = tello::VideoDecoderFfmpeg::Stats{};
-            dec_stats.frames_decoded = stream_stats.frames_decoded;
-            dec_stats.decode_errors = stream_stats.decode_errors;
-            dec_stats.decode_fps_ema = stream_stats.decode_fps_ema;
+        tello::MetricsCollector::VideoDecodeStats dec_stats{};
+        dec_stats.frames_decoded = stream_stats.frames_decoded;
+        dec_stats.decode_errors = stream_stats.decode_errors;
+        dec_stats.decode_fps_ema = stream_stats.decode_fps_ema;
 
-            vision_keyframes_.store(stream_stats.keyframes);
-            vision_frame_width_.store(stream_stats.frame_width);
-            vision_frame_height_.store(stream_stats.frame_height);
-            event = "vision:ffmpeg_stream";
-        }
+        vision_keyframes_.store(stream_stats.keyframes);
+        vision_frame_width_.store(stream_stats.frame_width);
+        vision_frame_height_.store(stream_stats.frame_height);
 
         const uint64_t packets_total = rx_stats.packets_total;
         const uint64_t delta = packets_total - last_vision_metrics_packets_;
@@ -2743,22 +2729,150 @@ private:
         updateRuntimeMetricsContext();
         metrics_.setElapsedMs(elapsed_ms);
         metrics_.setAttempt(metrics_attempt_);
-        metrics_.updateVideoReceiverStats(rx_stats);
+        metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(delta);
         metrics_.updateVideoAssemblerStats(nal_stats);
         metrics_.updateDecoderStats(dec_stats);
         metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
-        metrics_.setEvent(event);
+        metrics_.setEvent("vision:ffmpeg_stream");
         metrics_.updateLogMessage("", "");
         metrics_.setLastOutageFailures(client_.getLastOutageFailures());
         gui_metrics_rows_.push_back(metrics_.toCsvLine());
     }
-#endif
 
     void runReadCommand(const std::string& cmd, const QString& source) {
         runCommandWithResponse(cmd, source);
+    }
+
+    bool shouldRunCommandAsyncOnGui(const std::string& cmd) const {
+        return isCriticalFlightCommand(cmd) || cmd == "streamon" || cmd == "streamoff";
+    }
+
+    void enqueueBlockingCommand(const std::string& cmd,
+                                const QString& source,
+                                bool critical,
+                                bool was_auto_refresh_active) {
+        appendLog(QString::fromStdString(cmd) + " queued on command worker");
+        enqueueCommandWorkerTask([this, cmd, source, critical, was_auto_refresh_active]() {
+            AsyncCommandResult result;
+            result.command = cmd;
+            result.source = source;
+            result.critical = critical;
+            result.was_auto_refresh_active = was_auto_refresh_active;
+
+            std::string response;
+            const auto command_started_at = std::chrono::steady_clock::now();
+            result.rc = client_.sendCommandWithResponse(cmd, response);
+            result.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - command_started_at).count();
+            result.response = QString::fromStdString(response);
+            result.state = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
+
+            QMetaObject::invokeMethod(this, [this, result]() {
+                handleAsyncCommandResult(result);
+            }, Qt::QueuedConnection);
+        });
+    }
+
+    void handleAsyncCommandResult(const AsyncCommandResult& result) {
+        if (result.critical) {
+            current_critical_command_ms_ = result.elapsed_ms;
+        }
+
+        const QString rc_q = QString::fromStdString(responseCodeToString(result.rc));
+        QString line = QString::fromStdString(result.command) + " => " + rc_q;
+        if (!result.response.isEmpty()) {
+            line += " | response=\"" + result.response + "\"";
+        }
+        line += " | state=" + result.state;
+        appendLog(line);
+
+        if (result.critical && result.rc == tello::ResponseCode::ERROR) {
+            appendLog(QString::fromStdString(result.command)
+                      + " returned ERROR, but control-command ERROR can be ambiguous on Tello UDP; "
+                        "the next safety command is not blocked by this result.");
+        }
+
+        writeCommandMetricsRow(
+            result.source,
+            QString::fromStdString(result.command),
+            static_cast<double>(result.elapsed_ms),
+            result.rc,
+            result.response,
+            result.state);
+
+        if (result.critical) {
+            writeEventMetricsRow(QString("critical-command:end:") + QString::fromStdString(result.command));
+            critical_command_active_ = false;
+
+            constexpr int kCriticalResumeDelayMs = 1500;
+            if (result.was_auto_refresh_active && sdk_ready_ && result.command != "emergency") {
+                QTimer::singleShot(kCriticalResumeDelayMs, this, [this]() {
+                    if (sdk_ready_ && auto_refresh_timer_ != nullptr && !auto_refresh_timer_->isActive()) {
+                        auto_refresh_timer_->start(1000);
+                        appendLog("auto-refresh resumed");
+                        writeEventMetricsRow("auto-refresh:resumed");
+                        updateStatusLabel();
+                    }
+                });
+            }
+            current_pause_keepalive_ms_ = 0;
+            current_neutral_rc_ms_ = 0;
+            current_critical_command_ms_ = 0;
+        }
+
+        updateStatusLabel();
+    }
+
+    void prepareCriticalCommandOnGui(const std::string& cmd) {
+        current_pause_keepalive_ms_ = 0;
+        current_neutral_rc_ms_ = 0;
+        current_critical_command_ms_ = 0;
+        critical_command_active_ = true;
+        writeEventMetricsRow(QString("critical-command:begin:") + QString::fromStdString(cmd));
+
+        if (auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive()) {
+            auto_refresh_timer_->stop();
+            appendLog("auto-refresh paused for " + QString::fromStdString(cmd));
+        }
+        appendLog("sdk keepalive remains running; cooperative loop skips ticks while command channel is busy");
+
+        const bool rc_stream_was_active = rc_stream_timer_ != nullptr && rc_stream_timer_->isActive();
+        const bool rc_input_was_nonzero = hasNonZeroRcInput();
+        const bool keyboard_control_was_active = keyboard_control_active_;
+        if (keyboard_control_check_ != nullptr && keyboard_control_check_->isChecked()) {
+            QSignalBlocker blocker(keyboard_control_check_);
+            keyboard_control_check_->setChecked(false);
+        }
+        keyboard_control_active_ = false;
+        active_keyboard_keys_.clear();
+        if (keyboard_control_was_active) {
+            stopKeyboardRcWorker("keyboard-neutral-critical-" + cmd);
+        }
+        if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
+            QSignalBlocker blocker(rc_stream_check_);
+            rc_stream_check_->setChecked(false);
+        }
+        if (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) {
+            rc_stream_timer_->stop();
+        }
+
+        if (cmd == "takeoff" || cmd == "land") {
+            if (rc_stream_was_active || rc_input_was_nonzero || keyboard_control_was_active) {
+                setRcSliders(0, 0, 0, 0);
+                const CommandTimingResult neutral = sendRcNeutralBestEffort(QString::fromStdString(cmd));
+                current_neutral_rc_ms_ = neutral.elapsed_ms;
+            } else {
+                appendLog("rc neutral preflight skipped (" + QString::fromStdString(cmd)
+                          + "): RC stream was inactive and sliders were already zero");
+                writeEventMetricsRow(QString("rc-neutral:skipped:") + QString::fromStdString(cmd));
+            }
+        } else {
+            appendLog("continuous RC stopped for emergency");
+            writeEventMetricsRow("rc-stream:off:emergency");
+        }
     }
 
     void runCommandWithResponse(const std::string& cmd, const QString& source) {
@@ -2773,52 +2887,13 @@ private:
         const bool critical = isCriticalFlightCommand(cmd);
         const bool was_auto_refresh_active = auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive();
         if (critical) {
-            current_pause_keepalive_ms_ = 0;
-            current_neutral_rc_ms_ = 0;
-            current_critical_command_ms_ = 0;
-            critical_command_active_ = true;
-            writeEventMetricsRow(QString("critical-command:begin:") + QString::fromStdString(cmd));
+            prepareCriticalCommandOnGui(cmd);
+        }
 
-            if (auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive()) {
-                auto_refresh_timer_->stop();
-                appendLog("auto-refresh paused for " + QString::fromStdString(cmd));
-            }
-            appendLog("sdk keepalive remains running; cooperative loop skips ticks while command channel is busy");
-
-            const bool rc_stream_was_active = rc_stream_timer_ != nullptr && rc_stream_timer_->isActive();
-            const bool rc_input_was_nonzero = hasNonZeroRcInput();
-            const bool keyboard_control_was_active = keyboard_control_active_;
-            if (keyboard_control_check_ != nullptr && keyboard_control_check_->isChecked()) {
-                QSignalBlocker blocker(keyboard_control_check_);
-                keyboard_control_check_->setChecked(false);
-            }
-            keyboard_control_active_ = false;
-            active_keyboard_keys_.clear();
-            if (keyboard_control_was_active) {
-                stopKeyboardRcWorker("keyboard-neutral-critical-" + cmd);
-            }
-            if (rc_stream_check_ != nullptr && rc_stream_check_->isChecked()) {
-                QSignalBlocker blocker(rc_stream_check_);
-                rc_stream_check_->setChecked(false);
-            }
-            if (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) {
-                rc_stream_timer_->stop();
-            }
-
-            if (cmd == "takeoff" || cmd == "land") {
-                if (rc_stream_was_active || rc_input_was_nonzero || keyboard_control_was_active) {
-                    setRcSliders(0, 0, 0, 0);
-                    const CommandTimingResult neutral = sendRcNeutralBestEffort(QString::fromStdString(cmd));
-                    current_neutral_rc_ms_ = neutral.elapsed_ms;
-                } else {
-                    appendLog("rc neutral preflight skipped (" + QString::fromStdString(cmd)
-                              + "): RC stream was inactive and sliders were already zero");
-                    writeEventMetricsRow(QString("rc-neutral:skipped:") + QString::fromStdString(cmd));
-                }
-            } else {
-                appendLog("continuous RC stopped for emergency");
-                writeEventMetricsRow("rc-stream:off:emergency");
-            }
+        if (shouldRunCommandAsyncOnGui(cmd)) {
+            enqueueBlockingCommand(cmd, source, critical, was_auto_refresh_active);
+            updateStatusLabel();
+            return;
         }
 
         std::string response;
@@ -2949,6 +3024,13 @@ private:
     std::atomic<int> keyboard_rc_desired_d_{0};
     std::atomic<int64_t> keyboard_rc_last_update_ms_{0};
     RcChannels last_sent_rc_channels_;
+    std::thread command_worker_thread_;
+    std::mutex command_worker_mutex_;
+    std::condition_variable command_worker_cv_;
+    std::deque<std::function<void()>> command_worker_tasks_;
+    std::atomic<int32_t> command_worker_pending_{0};
+    bool command_worker_stop_ = false;
+    bool command_worker_running_ = false;
 
     tello::StateReceiver state_receiver_;
     QSpinBox* state_buffer_capacity_spin_ = nullptr;
@@ -2968,17 +3050,12 @@ private:
     QLabel* vision_size_label_ = nullptr;
     QLabel* vision_decode_err_label_ = nullptr;
     QLabel* vision_frame_info_label_ = nullptr;
-    QComboBox* vision_backend_combo_ = nullptr;
     QPushButton* vision_start_btn_ = nullptr;
     QPushButton* vision_stop_btn_ = nullptr;
     QPushButton* vision_pause_btn_ = nullptr;
     QPushButton* vision_snapshot_btn_ = nullptr;
     QPushButton* vision_overlay_btn_ = nullptr;
 
-#ifdef TELLO_HAS_FFMPEG
-    tello::VideoReceiver video_receiver_;
-    tello::VideoStreamAssembler video_assembler_;
-    tello::VideoDecoderFfmpeg video_decoder_;
     tello::VideoStreamReaderFfmpeg video_stream_reader_;
     std::mutex vision_frame_mutex_;
     QImage vision_latest_frame_;
@@ -2986,17 +3063,15 @@ private:
     std::atomic<uint64_t> vision_keyframes_{0};
     std::atomic<int32_t> vision_frame_width_{0};
     std::atomic<int32_t> vision_frame_height_{0};
-    std::atomic<bool> video_decoder_seen_sps_{false};
-    std::atomic<bool> video_decoder_seen_pps_{false};
-    std::atomic<bool> video_decoder_synced_{false};
     std::atomic<int64_t> vision_last_ui_frame_convert_ms_{0};
     std::atomic<uint64_t> vision_latest_frame_sequence_{0};
     uint64_t vision_displayed_frame_sequence_ = 0;
-#endif
     bool vision_pipeline_running_ = false;
-    bool vision_stream_backend_active_ = false;
     bool vision_paused_ = false;
     bool vision_overlay_enabled_ = true;
+    bool vision_recovery_in_progress_ = false;
+    bool has_last_vision_recovery_queue_ = false;
+    std::chrono::steady_clock::time_point last_vision_recovery_queue_tp_;
     bool critical_command_active_ = false;
     bool has_last_keepalive_restart_attempt_ = false;
     std::chrono::steady_clock::time_point last_keepalive_restart_attempt_tp_;
@@ -3076,6 +3151,8 @@ int main(int argc, char* argv[]) {
 
     QApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
     QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("CS500");
+    QCoreApplication::setApplicationName("Tello Control Panel");
 
     std::cerr << "[tello_control_panel] QT_QPA_PLATFORM="
               << qgetenv("QT_QPA_PLATFORM").constData()

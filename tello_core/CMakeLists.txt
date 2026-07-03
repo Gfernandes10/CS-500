@@ -10,9 +10,9 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 # Include compiler options
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompilerOptions.cmake)
 
-# Optional FFmpeg decode backend
+# Required FFmpeg stream backend
 option(TELLO_ENABLE_FFMPEG "Enable FFmpeg video decoder backend when available" ON)
-option(TELLO_REQUIRE_FFMPEG "Require FFmpeg backend and fail configure if missing" OFF)
+option(TELLO_REQUIRE_FFMPEG "Require FFmpeg backend and fail configure if missing" ON)
 option(TELLO_ENABLE_OPENCV_VIEWER "Enable OpenCV rendering support for GUI/fallback tools" ON)
 option(TELLO_ENABLE_QT_CONTROL_PANEL "Enable Qt-based tello_control_panel when Qt Widgets is available" ON)
 
@@ -27,23 +27,14 @@ endif()
 set(TELLO_HAS_FFMPEG OFF)
 if(TELLO_ENABLE_FFMPEG AND AVFORMAT_FOUND AND AVCODEC_FOUND AND AVUTIL_FOUND AND SWSCALE_FOUND)
     set(TELLO_HAS_FFMPEG ON)
-    message(STATUS "FFmpeg decoder backend enabled")
+    message(STATUS "FFmpeg stream backend enabled")
 else()
-    if(TELLO_ENABLE_FFMPEG)
-        if(TELLO_REQUIRE_FFMPEG)
-            message(FATAL_ERROR
-                "FFmpeg decoder backend is required but not available. "
-                "Install libavformat/libavcodec/libavutil/libswscale development packages and pkg-config, "
-                "or configure with -DTELLO_REQUIRE_FFMPEG=OFF for development mode.")
-        endif()
-        message(STATUS "FFmpeg decoder backend disabled (libavcodec/libavutil/libswscale not found)")
-    else()
-        if(TELLO_REQUIRE_FFMPEG)
-            message(FATAL_ERROR
-                "Invalid configuration: TELLO_REQUIRE_FFMPEG=ON requires TELLO_ENABLE_FFMPEG=ON.")
-        endif()
-        message(STATUS "FFmpeg decoder backend disabled by configuration (TELLO_ENABLE_FFMPEG=OFF)")
+    if(TELLO_REQUIRE_FFMPEG)
+        message(FATAL_ERROR
+            "FFmpeg stream backend is required but not available. "
+            "Install libavformat/libavcodec/libavutil/libswscale development packages and pkg-config.")
     endif()
+    message(STATUS "FFmpeg stream backend disabled by configuration")
 endif()
 
 # Library: tello_core
@@ -54,14 +45,11 @@ add_library(tello_core
     src/tello_client.cpp
     src/state_parser.cpp
     src/state_receiver.cpp
-    src/video_receiver.cpp
-    src/video_stream_assembler.cpp
-    src/video_pipeline_recovery.cpp
     src/metrics.cpp
 )
 
 if(TELLO_HAS_FFMPEG)
-    target_sources(tello_core PRIVATE src/video_decoder_ffmpeg.cpp src/video_stream_reader_ffmpeg.cpp)
+    target_sources(tello_core PRIVATE src/video_stream_reader_ffmpeg.cpp)
     target_link_libraries(tello_core PRIVATE PkgConfig::AVFORMAT PkgConfig::AVCODEC PkgConfig::AVUTIL PkgConfig::SWSCALE)
 endif()
 
@@ -90,12 +78,6 @@ add_executable(tello_cli
 )
 
 target_link_libraries(tello_cli PRIVATE tello_core)
-
-add_executable(video_receiver_smoke
-    apps/cli/video_receiver_smoke.cpp
-)
-
-target_link_libraries(video_receiver_smoke PRIVATE tello_core)
 
 set(TELLO_QT_WIDGETS_TARGET "")
 if(TELLO_ENABLE_QT_CONTROL_PANEL)
