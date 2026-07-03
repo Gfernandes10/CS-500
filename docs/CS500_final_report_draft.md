@@ -129,9 +129,20 @@ Packet age and packet interarrival measure different aspects of the stream. Pack
 
 ### 4.5 Qt Control Panel
 
-The Qt Control Panel is the main human-facing application. It is organized into Config and Operation tabs. Two annotated screenshots will be added later; the numbered descriptions below are intended to match those figures.
+The Qt Control Panel is the main human-facing application. It has a global control area above the tabs, followed by Config and Operation tabs. The annotated screenshots below show the corresponding interface areas; the numbered descriptions are intended to match those figures.
+
+#### Global Controls Above The Tabs
+
+![Global Control Panel Area](images/global_gui.png)
+
+1. **Top Status Row:** summarizes connection state, SDK readiness, RC stream state, keyboard-control state, speed setpoint, Wi-Fi status, battery, temperature, and state-recording status.
+2. **Connection Controls:** provide `Connect + SDK` and `Disconnect` actions. `Connect + SDK` initializes the command channel, enters SDK mode, starts telemetry reception, and starts SDK keepalive when appropriate.
+3. **Basic Flight Controls:** expose high-priority commands such as `takeoff`, `land`, `emergency`, `streamon`, `streamoff`, and hover/stop. `takeoff` requires confirmation, `emergency` is visually emphasized, and blocking critical commands are executed by a background command worker so the GUI event loop does not wait for SDK timeouts.
+4. **Log Panel:** records user-visible events, command responses, recovery events, and state transitions. The same log messages can also be stored in the GUI metrics CSV for experiment correlation.
 
 #### Config Tab Features
+
+![Control Panel Config Tab](images/config_gui.png)
 
 1. **Logging Export Configuration:** selects GUI metrics and state CSV paths, starts/stops recording, clears buffered recordings, and exports both CSV files.
 2. **Control Profiles:** creates, edits, saves, and deletes keyboard control profiles while preserving at least one default profile.
@@ -139,18 +150,18 @@ The Qt Control Panel is the main human-facing application. It is organized into 
 4. **Input Mapping:** maps keys to left, right, forward, back, up, down, yaw left, and yaw right actions.
 5. **SDK Read Commands:** provides quick buttons for query commands such as `battery?`, `speed?`, `time?`, `wifi?`, `sdk?`, and `sn?`.
 6. **Set Speed:** sends `speed x`, with the default setpoint initialized to `100`.
-7. **Control Commands:** exposes common movement, rotation, flip, takeoff, land, hover, and emergency commands. Blocking critical commands are executed by a background command worker so the GUI event loop does not wait for SDK timeouts.
+7. **Movement, Rotation, and Flip Commands:** exposes parameterized commands such as `up x`, `down x`, `left x`, `right x`, `forward x`, `back x`, `cw x`, `ccw x`, and `flip x`.
 8. **Raw Command:** allows manually sending an SDK command string for testing or diagnostics.
 
 #### Operation Tab Features
+
+![Control Panel Operation Tab](images/operation_gui.png)
 
 1. **Keyboard Control:** enables/disables keyboard RC control and shows the active profile and current RC vector.
 2. **Dedicated RC Worker:** sends the desired RC command independently from the GUI event loop and falls back to neutral if input becomes stale.
 3. **Manual RC Operation:** provides sliders for left/right, forward/back, up/down, and yaw, plus one-shot RC, zero-and-send, and continuous RC stream controls.
 4. **State History:** displays telemetry history, selected state plots, buffer size, recording status, and a red/green REC indicator.
 5. **Vision:** starts/stops FFmpeg Stream viewing, pauses live display, captures snapshots, and toggles the overlay.
-6. **Top Status Row:** shows connection status, Wi-Fi status, battery, temperature, and recording state.
-7. **Log Panel:** records user-visible events, command responses, recovery events, and state transitions.
 
 The Control Panel also records user-visible logs into the metrics CSV, allowing post-run analysis to correlate GUI events with telemetry, video, and command behavior. On application close or Ctrl+C, the panel sends `emergency` if the drone is connected.
 
@@ -162,7 +173,7 @@ The initial concern during flight testing was that GUI stalls could cause a move
 
 ## 5. Milestone Plan Traceability
 
-The original milestone plan divided the project into eight phases. This section summarizes each planned phase, the delivered work, and any remaining gap. It is intentionally explicit because the project is evaluated against the planned scope.
+The original milestone plan divided the project into eight phases. This section summarizes each planned phase and the delivered work.
 
 ### 5.1 Phase 0: Project Definition and Architecture
 
@@ -170,7 +181,7 @@ The planned goal for Phase 0 was to define the project scope, study the DJI Tell
 
 This phase was delivered. The project scope was defined around a modular C++ Tello communication stack. The architecture separates command, telemetry, video, metrics, GUI, and future ROS integration. The source tree was organized around a reusable core library, CLI applications, tests, documentation, and a placeholder ROS area. CMake and C++17 were adopted.
 
-The architecture is documented textually in this report. A polished architecture diagram can still be added later to improve presentation quality, but the architectural foundation itself was completed.
+The architecture is documented textually in this report.
 
 ### 5.2 Phase 1: Core Networking and Command Layer
 
@@ -232,7 +243,20 @@ The only major planned technical component not yet implemented is the ROS2 bridg
 
 ## 6. Experimental Methodology
 
-The evaluation focuses on the system behaviors that matter for manual operation and future robotics integration:
+The evaluation focuses on the system behaviors that matter for manual operation and future robotics integration: command reliability, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, and recovery after link or drone-session interruption.
+
+All experiments use the same metrics schema. This makes command, telemetry, video, GUI, recovery, keepalive, and RC behavior comparable across CLI and Control Panel runs. The general preparation for real-drone experiments was:
+
+1. build the project;
+2. power on the Tello;
+3. connect the computer to the Tello Wi-Fi network;
+4. wait approximately 10-15 seconds after drone power-on;
+5. run the smoke test before longer experiments;
+6. save metrics and, when applicable, state recordings for later analysis.
+
+Flight-related experiments were performed only in a clear indoor area, with low RC aggression first, short movement windows, and the operator ready to send `land` or `emergency`.
+
+The final experiment matrix is summarized below before the detailed procedures.
 
 | ID | Purpose |
 |---|---|
@@ -246,7 +270,43 @@ The evaluation focuses on the system behaviors that matter for manual operation 
 | `E8-PWR-CYCLE` | Evaluate recovery after a drone restart |
 | `E9-WIFI-LOSS` | Evaluate command reconnect after Wi-Fi loss |
 
-Each experiment records metrics with a consistent schema so command, telemetry, video, GUI, recovery, and RC behavior can be compared across runs.
+### 6.1 E1-SMOKE-CMD: Connectivity Smoke Test
+
+The smoke test verifies that the computer is connected to the drone, the command socket can enter SDK mode, and a simple query succeeds. The CLI sends `command` followed by `battery?` and records a single metrics file. The expected evidence is an `OK` command result, a nonzero command latency, and a valid CSV row. This test prevents wasting time on longer runs when the basic Wi-Fi or SDK setup is not ready.
+
+### 6.2 E2-CMD-BASE: Command Baseline
+
+The command baseline measures normal SDK command latency and failure behavior while the drone is idle on a flat surface. The CLI enters SDK mode and sends repeated `battery?` queries for approximately 60 seconds. The main metrics are `last_command_result`, `command_latency_ms_avg`, `command_failures`, and outage counters. This run establishes whether the command path is stable before adding telemetry display, video, GUI load, or flight commands.
+
+### 6.3 E3-STATE-CLI: Telemetry Baseline Without GUI
+
+The telemetry baseline measures the state channel without Qt rendering or video decoding. The CLI enters SDK mode, starts the state receiver, and records telemetry metrics for approximately 180 seconds while the drone remains stationary. The main metrics are telemetry receive rate, packet age, packet interarrival gaps, serious gap counts, and telemetry quality. This run serves as the clean reference for later GUI and flight runs; if telemetry is poor here, the GUI should not be blamed first.
+
+### 6.4 E4-VIDEO-CLI: Video Baseline Without GUI
+
+The video baseline measures FFmpeg Stream behavior without Qt display overhead. The CLI enters SDK mode, sends `streamon`, opens the FFmpeg UDP stream, records decoded-video metrics for approximately 120-180 seconds, and sends `streamoff` at shutdown. The drone is kept stationary with the camera facing a well-lit scene. The main metrics are video age, video quality, decoded FPS, decoder errors, frame size, and recovery fields if a stall occurs. This establishes whether the stream and decoder are healthy before the Control Panel is added.
+
+### 6.5 E5-GUI-VID-IDLE: Control Panel Stationary Baseline
+
+The stationary GUI baseline measures the final Control Panel under normal non-flight operation. The operator launches the panel, connects SDK mode, configures GUI metrics and state CSV export, starts recording, starts FFmpeg video, leaves the drone stationary for approximately 2-3 minutes, then stops video, stops recording, and exports the CSV files. This run exercises telemetry display, FFmpeg video display, GUI timers, logging, state recording, and CSV export. The main metrics are telemetry/video quality, decoder FPS, GUI vision tick delay, state/plot tick delay, vision refresh duration, plot paint time, command mutex wait time, and state recording gaps.
+
+### 6.6 E6-KBD-PROFILE: Keyboard Profile Validation
+
+The keyboard profile validation is a no-flight experiment. The operator creates or selects a keyboard profile, sets a low aggression value such as 20, maps keys to RC actions, saves the profile, restarts the panel, and confirms that the profile name, aggression, and mappings persist. No non-neutral RC should be sent unless keyboard control is explicitly enabled. This validates the configurability of the keyboard-control feature before using it in flight.
+
+### 6.7 E7-KBD-RESPONSE: Keyboard RC Safety And Flight Response
+
+The keyboard flight test is the main real-operation experiment. The operator starts the Control Panel, connects SDK mode, starts GUI and state recording, starts FFmpeg video, confirms the keyboard profile and aggression, performs takeoff, enables keyboard control, executes short RC pulses, disables keyboard control, lands, stops video, and exports the recordings. The commanded pulses include short up/down and yaw movements, with optional forward/back and left/right pulses only if the space is safe.
+
+This experiment sends `command`, `streamon`, `takeoff`, repeated keyboard-generated `rc a b c d`, neutral `rc 0 0 0 0` when no mapped key is pressed, `land`, and `streamoff`. It evaluates whether RC commands are sent at a safe cadence, whether RC returns to neutral after key release, whether the drone responds physically in telemetry, and whether telemetry/video remain fresh while the drone is airborne. The main evidence comes from RC channel logs, RC timestamps, height and time-of-flight response, yaw response, telemetry quality, video quality, decoder FPS, GUI timing, and command mutex wait time.
+
+### 6.8 E8-PWR-CYCLE: Power-Cycle Recovery
+
+The power-cycle experiment validates recovery after the drone restarts while the host process remains running. The CLI starts video watch, enters SDK mode, sends `streamon`, and records video/recovery metrics. After the stream is running, the drone is powered off, left off briefly, powered on again, and the computer reconnects to the Tello Wi-Fi network if needed. The process is left running so the recovery logic can detect the stalled session, probe the command channel, re-enter SDK mode, send `streamon`, and restart the local video pipeline if needed. The main metrics are recovery stage, recovery result, hard-recovery flag, command-channel availability, video age, video quality, and outage counters.
+
+### 6.9 E9-WIFI-LOSS: Command Reconnect Diagnostic
+
+The Wi-Fi-loss run is a command-channel reconnect diagnostic. The CLI runs command watch for approximately 120 seconds. After the run has started, the operator disconnects from the Tello Wi-Fi network for several seconds, reconnects, and lets the run finish. The main metrics are command failures, latest command result, connection state, command latency, and outage counters. This experiment is weaker than a full power-cycle recovery test, but it provides focused evidence for command-channel behavior during a Wi-Fi interruption.
 
 ## 7. Results
 
