@@ -1,0 +1,17 @@
+e2b35d6c343c3bea38be477315cb04c4  usr/bin/tello_cli
+7ec112baf472bb22abd867b61df9d8d2  usr/bin/tello_control_panel
+25bcfe4f8db96f595c8f5b232e89f287  usr/include/tello/command_executor.hpp
+85472423da42ba78aa3bb0901bebcf99  usr/include/tello/logger.hpp
+65a9ac6af082a83cdbf55dd75818032f  usr/include/tello/metrics.hpp
+debb487f449fa59690d0f9e40190a406  usr/include/tello/state_parser.hpp
+4339377577b5e5f1c08404de310cbddd  usr/include/tello/state_receiver.hpp
+7241e5f4d8014e69303f41a82eca6a3c  usr/include/tello/tello_client.hpp
+b9db223990e3c431fb52a6fbad972178  usr/include/tello/types.hpp
+119058a35778b79f2d802bf5b89c89db  usr/include/tello/udp_socket.hpp
+0ea0714c225f32ac30aecaf123e0cb97  usr/include/tello/video_stream_reader_ffmpeg.hpp
+7b2b24bbf9f5ec374e2f7b56deedc5b9  usr/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreConfig.cmake
+91c4cdda907c32069cb7b140dea672db  usr/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreConfigVersion.cmake
+720a3283cf08c73d255b4ed9505feec9  usr/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreTargets-release.cmake
+58d2bc1334758877f1f2c8baff857871  usr/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreTargets.cmake
+610b9df913af43f79b4f8784be95dd97  usr/lib/x86_64-linux-gnu/libtello_core.a
+73abf5af7feceb2a87e54aa854f05eea  usr/share/tello_core/control_profiles.json

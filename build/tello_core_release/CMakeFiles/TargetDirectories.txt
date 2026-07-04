@@ -1,0 +1,14 @@
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/tello_core.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/tello_cli.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/tello_control_panel.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/test_state_parser.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/test_metrics_collector.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/package.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/package_source.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/test.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/edit_cache.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/rebuild_cache.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/list_install_components.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/install.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/install/local.dir
+/home/gabriel_fernandes/CS 500/build/tello_core_release/CMakeFiles/install/strip.dir

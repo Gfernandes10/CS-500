@@ -1,0 +1,10 @@
+Architecture: amd64
+Depends: libavformat-dev, libavcodec-dev, libavutil-dev, libswscale-dev, pkg-config, libavcodec60 (>= 7:6.0), libavformat60 (>= 7:6.0), libavutil58 (>= 7:6.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libqt5core5t64 (>= 5.15.1), libqt5gui5t64 (>= 5.2.0) | libqt5gui5-gles (>= 5.2.0), libqt5widgets5t64 (>= 5.2.0~alpha1), libstdc++6 (>= 13.1), libswscale7 (>= 7:6.0)
+Description: C++ runtime, CLI, and Qt control panel for DJI Tello
+Maintainer: Gabriel Fernandes
+Package: tello_core
+Priority: optional
+Section: devel
+Version: 1.0.0
+Installed-Size: 1117
+

@@ -1,0 +1,17 @@
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/lib/x86_64-linux-gnu/libtello_core.a
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/bin/tello_cli
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/bin/tello_control_panel
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/tello_client.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/types.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/metrics.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/logger.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/video_stream_reader_ffmpeg.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/udp_socket.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/state_receiver.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/state_parser.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/include/tello/command_executor.hpp
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreTargets.cmake
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreTargets-release.cmake
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreConfig.cmake
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/lib/x86_64-linux-gnu/cmake/tello_core/tello_coreConfigVersion.cmake
+/home/gabriel_fernandes/CS 500/build/tello_core_release/_CPack_Packages/Linux/TGZ/tello_core-1.0.0-Linux-x86_64/share/tello_core/control_profiles.json
