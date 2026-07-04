@@ -28,6 +28,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -342,7 +343,7 @@ private:
 
 class ControlPanelWidget final : public QWidget {
 public:
-    ControlPanelWidget() {
+    explicit ControlPanelWidget(bool ros_mode = false) : ros_mode_(ros_mode) {
         setWindowTitle("Tello Control Panel");
         resize(1220, 900);
         setMinimumSize(720, 520);
@@ -449,7 +450,8 @@ public:
         loadControlProfiles();
         qApp->installEventFilter(this);
 
-        appendLog("Panel ready. Click Connect + SDK first.");
+        appendLog(ros_mode_ ? "Panel ready in ROS mode. Commands are sent to /tello/gui_command."
+                            : "Panel ready. Click Connect + SDK first.");
         appendLog("Logging export configuration active.");
         appendLog("Buttons added for control/set/read command families.");
         appendLog("Keyboard control profiles loaded from control_profiles.json.");
@@ -2161,6 +2163,11 @@ private:
             return tello::ResponseCode::ERROR;
         }
 
+        if (ros_mode_) {
+            const bool ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
+            return ok ? tello::ResponseCode::OK : tello::ResponseCode::ERROR;
+        }
+
         const auto rc = client_.sendCommandNoWait(cmd);
         int a = 0;
         int b = 0;
@@ -2273,6 +2280,13 @@ private:
     }
 
     bool connectSdk() {
+        if (ros_mode_) {
+            const bool ok = callRosTriggerService("/tello/connect", "connect");
+            sdk_ready_ = ok;
+            updateStatusLabel();
+            return ok;
+        }
+
         // Recovery-friendly connect flow: always refresh command channel state.
         // This is important after drone power-cycle while the app stays open.
         constexpr int kConnectAttempts = 6;
@@ -2332,6 +2346,13 @@ private:
     }
 
     void disconnectSdk() {
+        if (ros_mode_) {
+            (void)callRosTriggerService("/tello/disconnect", "disconnect");
+            sdk_ready_ = false;
+            updateStatusLabel();
+            return;
+        }
+
         stopKeyboardRcWorker("disconnect");
         client_.stopSdkKeepalive();
         auto_refresh_timer_->stop();
@@ -2390,6 +2411,16 @@ private:
 
     void performEmergencyShutdownIfConnected(const QString& reason) {
         if (emergency_shutdown_sent_) {
+            return;
+        }
+
+        if (ros_mode_) {
+            if (!sdk_ready_) {
+                return;
+            }
+            emergency_shutdown_sent_ = true;
+            appendLog("shutdown safety emergency via ROS (" + reason + ")");
+            (void)callRosCommandService("emergency", "shutdown");
             return;
         }
 
@@ -2876,6 +2907,17 @@ private:
     }
 
     void runCommandWithResponse(const std::string& cmd, const QString& source) {
+        if (ros_mode_) {
+            if (cmd == "command") {
+                (void)connectSdk();
+                return;
+            }
+            const bool ok = callRosCommandService(QString::fromStdString(cmd), source);
+            appendLog(QString::fromStdString(cmd) + " => " + (ok ? "ROS_SENT" : "ROS_FAILED"));
+            updateStatusLabel();
+            return;
+        }
+
         if (cmd == "command") {
             (void)connectSdk();
             return;
@@ -2983,9 +3025,30 @@ private:
         raw_command_edit_->clear();
     }
 
+    bool callRosTriggerService(const QString& service, const QString& label) {
+        const int rc = QProcess::execute(
+            "ros2",
+            {"service", "call", service, "std_srvs/srv/Trigger", "{}"});
+        appendLog(label + " via ROS service " + service + " => exit " + QString::number(rc));
+        return rc == 0;
+    }
+
+    bool callRosCommandService(const QString& command, const QString& source) {
+        QString escaped_command = command;
+        QString escaped_source = source;
+        escaped_command.replace("\\", "\\\\").replace("'", "''");
+        escaped_source.replace("\\", "\\\\").replace("'", "''");
+        const QString payload = "{command: '" + escaped_command + "', source: '" + escaped_source + "'}";
+        const int rc = QProcess::execute(
+            "ros2",
+            {"service", "call", "/tello/gui_command", "tello_interfaces/srv/Command", payload});
+        return rc == 0;
+    }
+
     tello::TelloClient client_;
     bool sdk_ready_ = false;
     bool emergency_shutdown_sent_ = false;
+    bool ros_mode_ = false;
 
     QLabel* status_label_ = nullptr;
     QLabel* wifi_quality_label_ = nullptr;
@@ -3161,7 +3224,14 @@ int main(int argc, char* argv[]) {
               << " LIBGL_ALWAYS_SOFTWARE=" << qgetenv("LIBGL_ALWAYS_SOFTWARE").constData()
               << std::endl;
 
-    ControlPanelWidget panel;
+    bool ros_mode = false;
+    for (int i = 1; i < argc; ++i) {
+        if (QString::fromLocal8Bit(argv[i]) == "--ros-mode") {
+            ros_mode = true;
+        }
+    }
+
+    ControlPanelWidget panel(ros_mode);
     std::signal(SIGINT, [](int) {
         QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
     });
