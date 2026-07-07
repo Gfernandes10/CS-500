@@ -75,6 +75,34 @@ std::string connectionStateToString(tello::TelloClient::ConnectionState state) {
     }
 }
 
+std::string connectionEventToString(tello::TelloClient::ConnectionEvent event) {
+    switch (event) {
+        case tello::TelloClient::ConnectionEvent::LOST:
+            return "LOST";
+        case tello::TelloClient::ConnectionEvent::RESTORED:
+            return "RESTORED";
+        case tello::TelloClient::ConnectionEvent::TRANSIENT_LOSS_RECOVERED:
+            return "TRANSIENT_LOSS_RECOVERED";
+        case tello::TelloClient::ConnectionEvent::NONE:
+            return "NONE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+void printConnectionEvent(const tello::TelloClient& client, tello::TelloClient::ConnectionEvent event) {
+    if (event == tello::TelloClient::ConnectionEvent::LOST) {
+        std::cout << "[tello_cli] event: connection lost" << std::endl;
+    } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
+        std::cout << "[tello_cli] event: connection restored"
+                  << " (after " << client.getLastOutageFailures() << " failed attempts)"
+                  << std::endl;
+    } else if (event == tello::TelloClient::ConnectionEvent::TRANSIENT_LOSS_RECOVERED) {
+        std::cout << "[tello_cli] event: transient command loss recovered within command"
+                  << std::endl;
+    }
+}
+
 std::string runModeToString(RunMode mode) {
     switch (mode) {
         case RunMode::WATCH:
@@ -252,7 +280,7 @@ int main(int argc, char** argv) {
     tello::TelloClient client;
 
     // Step 1: open command socket to Tello default endpoint.
-    tello::ResponseCode init_rc = client.initialize("192.168.10.1", 8889, 9000);
+    tello::ResponseCode init_rc = client.initialize("192.168.10.1", 8889, 8889);
     std::cout << "[tello_cli] initialize: " << responseCodeToString(init_rc) << std::endl;
 
     if (init_rc != tello::ResponseCode::OK) {
@@ -418,13 +446,7 @@ int main(int argc, char** argv) {
                           << std::endl;
 
                 event = client.consumeConnectionEvent();
-                if (event == tello::TelloClient::ConnectionEvent::LOST) {
-                    std::cout << "[tello_cli] event: connection lost" << std::endl;
-                } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-                    std::cout << "[tello_cli] event: connection restored"
-                              << " (after " << client.getLastOutageFailures() << " failed attempts)"
-                              << std::endl;
-                }
+                printConnectionEvent(client, event);
             }
 
             if (metrics_enabled) {
@@ -432,12 +454,8 @@ int main(int argc, char** argv) {
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - run_started_at).count();
 
-                std::string event_str = "NONE";
-                if (event == tello::TelloClient::ConnectionEvent::LOST) {
-                    event_str = "LOST";
-                } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-                    event_str = "RESTORED";
-                } else if (recovery.attempted) {
+                std::string event_str = connectionEventToString(event);
+                if (event == tello::TelloClient::ConnectionEvent::NONE && recovery.attempted) {
                     event_str = power_cycle_recovery_used ? "VIDEO_POWER_RECOVERY" : "VIDEO_RECOVERY";
                 }
 
@@ -563,13 +581,7 @@ int main(int argc, char** argv) {
             const tello::StateReceiver::TelemetryStats stats = receiver.getTelemetryStats();
             const tello::TelloClient::ConnectionEvent event = client.consumeConnectionEvent();
 
-            if (event == tello::TelloClient::ConnectionEvent::LOST) {
-                std::cout << "[tello_cli] event: connection lost" << std::endl;
-            } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-                std::cout << "[tello_cli] event: connection restored"
-                          << " (after " << client.getLastOutageFailures() << " failed attempts)"
-                          << std::endl;
-            }
+            printConnectionEvent(client, event);
 
             constexpr int64_t kCliStateStaleThresholdMs = 1000;
             if (!receiver.hasReceivedState()) {
@@ -602,12 +614,7 @@ int main(int argc, char** argv) {
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - run_started_at).count();
 
-                std::string event_str = "NONE";
-                if (event == tello::TelloClient::ConnectionEvent::LOST) {
-                    event_str = "LOST";
-                } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-                    event_str = "RESTORED";
-                }
+                std::string event_str = connectionEventToString(event);
 
                 metrics.setElapsedMs(elapsed_ms);
                 metrics.setAttempt(static_cast<uint64_t>(attempt));
@@ -697,25 +704,14 @@ int main(int argc, char** argv) {
         std::cout << std::endl;
 
         const tello::TelloClient::ConnectionEvent event = client.consumeConnectionEvent();
-        if (event == tello::TelloClient::ConnectionEvent::LOST) {
-            std::cout << "[tello_cli] event: connection lost" << std::endl;
-        } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-            std::cout << "[tello_cli] event: connection restored"
-                      << " (after " << client.getLastOutageFailures() << " failed attempts)"
-                      << std::endl;
-        }
+        printConnectionEvent(client, event);
 
         if (metrics_enabled) {
             const auto elapsed_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - run_started_at).count();
 
-            std::string event_str = "NONE";
-            if (event == tello::TelloClient::ConnectionEvent::LOST) {
-                event_str = "LOST";
-            } else if (event == tello::TelloClient::ConnectionEvent::RESTORED) {
-                event_str = "RESTORED";
-            }
+            std::string event_str = connectionEventToString(event);
 
             metrics.setElapsedMs(elapsed_ms);
             metrics.setAttempt(static_cast<uint64_t>(attempt));
@@ -724,6 +720,26 @@ int main(int argc, char** argv) {
                 static_cast<double>(command_elapsed_ms),
                 battery_rc,
                 battery_response);
+            if (const auto executor = client.getCommandExecutor()) {
+                const auto timing = executor->getLastTimingStats();
+                metrics.updateCommandDiagnostics(
+                    "cli-watch",
+                    executor->getLastError(),
+                    executor->getLastAttemptLog(),
+                    client.getLastCommandInternalAttemptLog());
+                metrics.updateCommandTimingDiagnostics(
+                    client.getLastCommandClientTotalMs(),
+                    client.getLastEnsureSdkModeMs(),
+                    client.getLastCommandExecutorMs(),
+                    timing.send_ms,
+                    timing.recv_wait_ms,
+                    timing.parse_ms,
+                    client.getLastCommandExecutorRecvWaitTotalMs(),
+                    client.getLastCommandExecutorInternalTotalMs(),
+                    client.getLastCommandRecoveryMs(),
+                    client.getLastCommandExecutorCalls(),
+                    client.getLastCommandRecoveryCount());
+            }
             metrics.setConnectionState(connectionStateToString(client.getConnectionState()));
             metrics.setEvent(event_str);
             metrics.setLastOutageFailures(client.getLastOutageFailures());

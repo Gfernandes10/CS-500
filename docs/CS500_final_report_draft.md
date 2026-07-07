@@ -10,7 +10,7 @@
 
 This project develops and evaluates a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. The system is built around a reusable core library that implements UDP-based SDK command execution, telemetry parsing, FFmpeg-based video streaming, runtime metrics, recovery behavior, and safety-oriented RC control. On top of the core library, the project provides command-line tools and a Qt-based Control Panel for live video, telemetry visualization, CSV logging, manual commands, and configurable keyboard-based flight control.
 
-The implementation was evaluated using real-drone experiments covering command latency, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, power-cycle recovery, and Wi-Fi reconnect behavior. The final experiments show stable baseline command behavior, usable telemetry and video freshness, approximately 31-32 FPS FFmpeg video decoding, and a median estimated vertical RC reaction time of 814 ms during keyboard-controlled flight. The current report documents the system before the planned ROS2 integration stage, which will expose the core library to robotics workflows through topics, services, and command inputs.
+The implementation was evaluated using real-drone experiments covering command latency, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, power-cycle recovery, and Wi-Fi reconnect behavior. The final experiments show stable baseline command behavior, usable telemetry and video freshness, approximately 31-34 FPS FFmpeg video decoding, and measurable keyboard RC response across vertical, yaw, and attitude-proxy axes during flight. The current report documents the system before the planned ROS2 integration stage, which will expose the core library to robotics workflows through topics, services, and command inputs.
 
 ## 1. Introduction
 
@@ -42,6 +42,8 @@ The DJI Tello SDK communicates over Wi-Fi using UDP. The host computer connects 
 Before most SDK functionality is available, the host sends `command` to enter SDK mode. After that, command strings such as `battery?`, `takeoff`, `land`, `streamon`, and `streamoff` can be sent to the command port. Many SDK commands return a response such as `ok`, `error`, a numeric value, or no response before the client timeout expires. Because the protocol is UDP-based, software must be prepared for delayed, missing, or ambiguous responses.
 
 The telemetry stream is different from the command channel. Once the drone is in SDK mode, it periodically sends state packets to the host. These packets include fields such as attitude, velocity, height, time-of-flight distance, battery, barometer, and temperature. Telemetry is not requested one packet at a time; it is received asynchronously by a background receiver.
+
+Three altitude-related fields are especially relevant for the flight analysis. `tof` is the time-of-flight distance in centimeters, measured by a downward distance sensor that estimates range from the time required for an emitted signal to reflect back to the drone. `h` is the SDK-reported height in centimeters. `baro` is a barometer-derived altitude measurement in centimeters, based on air pressure. In this project, `h` and `tof` are used to detect short vertical RC responses because they are easier to interpret over low-altitude indoor motion. `baro` is useful as a complementary trend signal but is not used alone for fine reaction-time estimates.
 
 The video stream is enabled with `streamon` and disabled with `streamoff`. The drone sends H264 video over UDP port `11111`. In this project, FFmpeg opens the UDP stream directly, handles H264 parsing and decoding, and returns decoded RGB frames to the application.
 
@@ -78,9 +80,11 @@ The architecture separates transport, parsing, client state, metrics, and user i
 
 The command channel uses UDP to send SDK commands to the drone and wait for responses. Reliability is handled in layers. `UdpSocket` provides transport operations and timeout handling. `CommandExecutor` handles command execution policy, including retry and timeout behavior. `TelloClient` owns higher-level SDK state and exposes methods such as SDK entry, takeoff, land, stream control, keepalive, and recovery.
 
-The client tracks connection state through connected, recovering, and disconnected states. It also exposes connection events such as lost and restored, which are useful for experiments and logging. A keepalive loop can periodically send `battery?` queries to keep the SDK session active when no RC stream is running.
+The client tracks connection state through connected, recovering, and disconnected states. It also exposes connection events such as lost, restored, and transient loss recovered, which are useful for experiments and logging. A keepalive loop can periodically send `battery?` queries to keep the SDK session active when no RC stream is running.
 
-Several command-channel details were refined during real-drone testing. Critical commands such as `takeoff` and `land` are protected by preflight neutral RC behavior. RC commands use a non-blocking path where appropriate so that they do not wait behind slow query commands. In the Qt Control Panel, blocking critical commands and stream-control commands are dispatched through a background command worker; the GUI receives the final result through a queued callback and remains responsive while the command is waiting for an SDK response or timeout. Metrics include command latency, failures, command mutex wait time, command source, raw attempt logs, and connection state.
+Several command-channel details were refined during real-drone testing. Critical commands such as `takeoff` and `land` are protected by preflight neutral RC behavior. RC commands use a non-blocking path where appropriate so that they do not wait behind slow query commands. In the Qt Control Panel, blocking critical commands and stream-control commands are dispatched through a background command worker; the GUI receives the final result through a queued callback and remains responsive while the command is waiting for an SDK response or timeout. Metrics include command latency, failures, command mutex wait time, command source, raw attempt logs, internal attempt logs, recovery timing, and connection state.
+
+An important refinement was the distinction between a real connection loss and a transient command outage that recovers inside the same high-level API call. Earlier logs could report `LOST` as soon as one internal SDK command attempt timed out, even if retry or recovery succeeded and the public API call returned `OK`. The client now records the full `command_internal_attempt_log`, including all executor calls and recovery calls made inside one high-level command. If at least one internal attempt failed but the final command result is `OK`, the event is classified as `TRANSIENT_LOSS_RECOVERED` instead of a persistent loss. This produces a more accurate operator and experiment log.
 
 ### 4.2 Telemetry
 
@@ -135,7 +139,7 @@ The Qt Control Panel is the main human-facing application. It has a global contr
 
 ![Global Control Panel Area](images/global_gui.png)
 
-1. **Top Status Row:** summarizes connection state, SDK readiness, RC stream state, keyboard-control state, speed setpoint, Wi-Fi status, battery, temperature, and state-recording status.
+1. **Top Status Row:** summarizes connection state, SDK readiness, RC stream state, keyboard-control state, speed setpoint, aggregate link quality, Wi-Fi status, battery, temperature, and state-recording status.
 2. **Connection Controls:** provide `Connect + SDK` and `Disconnect` actions. `Connect + SDK` initializes the command channel, enters SDK mode, starts telemetry reception, and starts SDK keepalive when appropriate.
 3. **Basic Flight Controls:** expose high-priority commands such as `takeoff`, `land`, `emergency`, `streamon`, `streamoff`, and hover/stop. `takeoff` requires confirmation, `emergency` is visually emphasized, and blocking critical commands are executed by a background command worker so the GUI event loop does not wait for SDK timeouts.
 4. **Log Panel:** records user-visible events, command responses, recovery events, and state transitions. The same log messages can also be stored in the GUI metrics CSV for experiment correlation.
@@ -276,7 +280,7 @@ The smoke test verifies that the computer is connected to the drone, the command
 
 ### 6.2 E2-CMD-BASE: Command Baseline
 
-The command baseline measures normal SDK command latency and failure behavior while the drone is idle on a flat surface. The CLI enters SDK mode and sends repeated `battery?` queries for approximately 60 seconds. The main metrics are `last_command_result`, `command_latency_ms_avg`, `command_failures`, and outage counters. This run establishes whether the command path is stable before adding telemetry display, video, GUI load, or flight commands.
+The command baseline measures normal SDK command latency and failure behavior while the drone is idle on a flat surface. The CLI enters SDK mode and sends repeated `battery?` queries for approximately 120 seconds, long enough to observe the recurring transient command-channel events seen during testing. The main metrics are `last_command_result`, `command_latency_ms_avg`, per-command latency, internal attempt logs, recovery timing, and outage counters. This run establishes whether the command path is stable before adding telemetry display, video, GUI load, or flight commands.
 
 ### 6.3 E3-STATE-CLI: Telemetry Baseline Without GUI
 
@@ -314,21 +318,27 @@ The final experiments produced a complete set of command, telemetry, video, GUI,
 
 | Experiment | Key Result |
 |---|---|
-| `E2-CMD-BASE` | 59.0 s command baseline, 0 final command failures, 34.6 ms final average latency |
+| `E2-CMD-BASE` | 121.6 s command baseline, 0 final command failures, 2 recovered transient command outages |
 | `E3-STATE-CLI` | telemetry-only baseline ended with telemetry quality `OK` |
 | `E4-VIDEO-CLI` | FFmpeg Stream video ended with video quality `OK`, decoder FPS about 31.3 |
 | `E5-GUI-VID-IDLE` | valid idle GUI run; no RC commands; telemetry/video quality `OK/OK` |
-| `E7-KBD-RESPONSE` | 1106 RC rows, 291 non-zero RC rows, telemetry/video quality `OK/OK`, decoder FPS about 32.1 |
+| `E7-KBD-RESPONSE` | repeated keyboard-flight run with telemetry/video quality `OK/OK`, decoder FPS about 33.7, and measurable RC response on vertical, yaw, roll, and pitch proxies |
 | `E8-PWR-CYCLE` | 8 recovery rows, successful `power_streamon` recovery |
 | `E9-WIFI-LOSS` | 38 rows, 4 command failures, final command result `OK` |
 
 ### 7.1 Command Channel
 
-The command baseline measured SDK command behavior in a stable connection scenario. The final average command latency was approximately 34.6 ms, with no final command failures during the baseline run. This indicates that the command path is reliable for normal query-style operations when the Wi-Fi link is stable.
+The command baseline measured SDK command behavior in a stable connection scenario. The run completed with 115 successful commands and no final command failures. Normal command samples had a median latency of approximately 16 ms and a filtered mean of approximately 23.0 ms when recovered outliers above 500 ms were excluded. The cumulative average including recovered transient outliers was higher, approximately 65.1 ms, because two command samples included delayed UDP response/recovery behavior. These recovered outliers occurred near 59.9 s and 121.6 s. This indicates that the normal command path is fast, while occasional transport outages can temporarily dominate the average without causing final command failure.
 
-The plotted command latency is a cumulative running average. The first point is high because it is based on only one `battery?` response, around 117 ms. Later `battery?` responses were mostly around 48-53 ms, so the running average falls as more samples are added. This should be interpreted as first-command or warm-up overhead plus cumulative-average convergence, not as evidence that every command continuously became faster.
+The plotted command latency is a cumulative running average. The first point is high because it is based on only one `battery?` response, around 70 ms. Later early-run `battery?` responses were mostly around 41-51 ms, so the running average falls as more samples are added. This should be interpreted as first-command or warm-up overhead plus cumulative-average convergence, not as evidence that every command continuously became faster.
 
 ![Command latency](images/e2_command_latency.png)
+
+Additional diagnostic runs investigated periodic command-latency spikes observed during repeated `battery?` queries. The internal timing metrics showed that the spikes were dominated by accumulated UDP receive wait time. In the final command-baseline run, the two long command samples had `command_executor_recv_wait_total_ms` around 2.2 seconds, `command_executor_calls` equal to two, and `command_recovery_count` equal to one, while the final high-level command result was still `OK`. The internal attempt log showed that each event contained three timed-out `battery?` attempts, one successful SDK recovery command, and then a successful `battery?` retry. This indicates that the client sent a query, did not receive a response before the SDK timeout, performed retry/recovery, and then received a valid response.
+
+To verify whether this was caused by the API or by the network path, the command baseline was repeated while capturing UDP traffic with `tcpdump`. The packet capture showed the same behavior externally. Around one transient event, `battery?` packets were sent repeatedly without a timely response; recovery then sent `command`, the drone replied `ok`, and the next `battery?` returned normally. Around another event, a `battery?` response arrived after the SDK timeout window, which explains why the API had already treated the attempt as failed. Therefore, the evidence indicates a real transient UDP transport outage or delayed drone response, not local CPU load, GUI rendering, parsing overhead, mutex blocking, or the API failing to read a response that had arrived on time.
+
+This result motivated the `TRANSIENT_LOSS_RECOVERED` event classification. A recovered transient outage is different from a persistent connection loss: it is important for diagnostics and future control design, but it should not be logged as if the command channel remained disconnected after the call.
 
 ### 7.2 Telemetry
 
@@ -354,7 +364,9 @@ These results support the decision to use FFmpeg Stream as the project's only vi
 
 The Control Panel was tested in idle video operation and during keyboard flight. GUI timing metrics distinguish event-loop scheduling delay from the actual cost of refreshing video and drawing plots. The reference periods are approximately 120 ms for the vision refresh timer and 250 ms for the state/plot refresh timer.
 
-The keyboard-flight run showed the largest GUI delay spikes near 36.2 s and 135.7 s. These timestamps align with the delayed timeout logging for `takeoff` and `land`, while telemetry indicates physical takeoff started earlier, around 30.6 s, and physical landing started earlier, around 130.0 s. This suggests the spikes were associated with the blocking critical-command path returning and logging its result, not with the physical motion itself. This finding motivated the final change that moves blocking critical commands and stream/recovery commands into a background command worker.
+The repeated keyboard-flight run was used to check whether moving critical commands into a background command worker removed the GUI stalls observed earlier. The result was positive: the vision timer stayed near its expected period with median 125 ms, p95 125 ms, and maximum 148 ms. The state/plot timer stayed near its expected period with median 249 ms, p95 250 ms, and maximum 253 ms. `command_mutex_wait_ms` remained 0 ms, which indicates that GUI refresh paths were not waiting on the command mutex.
+
+The SDK response behavior was still imperfect. In the repeated run, `takeoff` was logged as `TIMEOUT`, while `land` returned `OK`. However, this timeout no longer froze the Control Panel. This distinction is important: the background worker does not make the drone SDK response model more reliable, but it prevents SDK timeout behavior from blocking the Qt event loop.
 
 ![GUI tick delay](images/gui_tick_delay_idle_vs_flight.png)
 
@@ -364,7 +376,7 @@ The idle GUI run maintained video and telemetry freshness, but timing metrics re
 
 The keyboard flight experiment is the main real-operation test. During this run, the drone was airborne, video was active, telemetry was logged, and keyboard-generated RC commands were sent by the dedicated RC worker.
 
-The height and vertical RC plot separates the physical height readings from the operator's vertical RC command. The takeoff and landing markers are estimated from telemetry rather than from delayed command log rows. The physical takeoff marker is the first sustained increase in height or time-of-flight, and the landing marker is the beginning of the final sustained descent toward the ground.
+The height and vertical RC plot separates the physical height readings from the operator's vertical RC command. The takeoff and landing markers are estimated from telemetry rather than from delayed command log rows. The physical takeoff marker is the first sustained increase in SDK height or time-of-flight distance, and the landing marker is the beginning of the final sustained descent toward the ground. In the repeated E7 run, telemetry indicates a physical takeoff marker around 16.0 s and a landing-start marker around 187.7 s. The logged `takeoff` command row appears later than the physical takeoff marker, so this run is useful for GUI and RC behavior, but not for attributing physical takeoff timing directly to the logged `takeoff` command row.
 
 ![E7 height and vertical RC](images/e7_height_and_vertical_rc.png)
 
@@ -376,15 +388,24 @@ The RC channel plot shows the keyboard-generated control commands over time.
 
 ![E7 RC channels](images/e7_rc_channels.png)
 
-During the same flight, telemetry and video freshness stayed `OK`, and decode FPS remained around 32 FPS. This indicates that the system could maintain video, telemetry, and RC operation simultaneously in this test.
+During the same flight, telemetry and video freshness stayed `OK`, and decode FPS remained around 33.7 FPS by the end of the run. This indicates that the system could maintain video, telemetry, and RC operation simultaneously in this test.
 
 ![E7 operation quality and video](images/e7_operation_quality_video.png)
 
-The estimated vertical RC reaction latency was computed from the keyboard-flight state data. Consecutive non-zero RC samples were grouped into command pulses. For vertical pulses (`rc_c != 0`), the command timestamp was taken from the monotonic RC command timestamp. The response timestamp was the first later telemetry sample where height or time-of-flight changed by at least 5 cm in the expected direction.
+The RC response-latency estimate was computed from the keyboard-flight state data. Consecutive non-zero RC samples were grouped into command pulses. For each pulse, the command timestamp was taken from the monotonic RC command timestamp, and the response timestamp was the first later telemetry sample that crossed a channel-specific threshold.
 
-Each point in the reaction plot represents one valid vertical RC pulse. Blue points are upward commands (`rc_c > 0`). Orange points are downward commands (`rc_c < 0`). The dashed horizontal line marks the median reaction time, and the dotted horizontal line marks the mean reaction time.
+The most direct estimates are vertical and yaw. For vertical pulses (`rc_c != 0`), response was detected when `h` or `tof` changed by at least 5 cm in the expected direction. For yaw pulses (`rc_d != 0`), response was detected when yaw changed by at least 3 degrees in the expected direction. Lateral and forward/backward translation could not be measured directly from `vgx` and `vgy` in this run because those SDK velocity fields stayed close to zero. Instead, left/right (`rc_a`) was estimated from roll response, and forward/back (`rc_b`) was estimated from pitch response, using a 2-degree attitude threshold. These are therefore attitude-response estimates, not direct displacement measurements.
 
-The median estimated reaction time was **814 ms** across 17 valid vertical RC pulses. The mean was 835 ms, with a range from 342 ms to 1320 ms.
+The repeated E7 run produced the following estimated response latencies:
+
+| RC channel | Motion | Telemetry proxy | Valid pulses | Median | Mean | Range |
+|---|---|---|---:|---:|---:|---:|
+| `rc_a` | left/right | roll attitude | 4/7 | 358 ms | 356 ms | 293-413 ms |
+| `rc_b` | forward/back | pitch attitude | 5/12 | 361 ms | 378 ms | 305-514 ms |
+| `rc_c` | up/down | height/time-of-flight | 14/14 | 638 ms | 619 ms | 399-820 ms |
+| `rc_d` | yaw | yaw attitude | 9/9 | 411 ms | 488 ms | 303-923 ms |
+
+Each point in the reaction plot represents one detected RC pulse. Blue points indicate positive RC commands and orange points indicate negative RC commands. The horizontal marker shows the median for each channel.
 
 ![E7 RC reaction latency](images/e7_rc_reaction_latency.png)
 
@@ -408,9 +429,15 @@ The results show that the core command, telemetry, video, and GUI components are
 
 The most important implementation decision in the video subsystem was standardizing on FFmpeg Stream. By allowing FFmpeg to own UDP stream reading, H264 parsing, decoding, and frame timing, the application avoids maintaining a fragile custom video parser and obtains smoother live video during flight.
 
-Keyboard RC control required special attention because control commands can be safety-critical. The dedicated RC worker reduces the risk that GUI event-loop stalls keep a movement command active longer than intended. The flight experiment showed that RC commands were recorded, non-zero commands were sent, the drone responded physically, and telemetry/video remained `OK`.
+Keyboard RC control required special attention because control commands can be safety-critical. The dedicated RC worker reduces the risk that GUI event-loop stalls keep a movement command active longer than intended. The repeated flight experiment showed that RC commands were recorded, non-zero commands were sent, the drone responded physically, and telemetry/video remained `OK`. The strongest physical response evidence came from vertical height/time-of-flight changes and yaw changes; lateral and forward/backward response was visible through attitude proxies.
 
-The GUI timing analysis also showed that blocking critical command calls can affect responsiveness when their timeout result is logged. To address this, the Control Panel was updated so critical commands and stream/recovery commands run in a background command worker and report results back to the GUI through queued callbacks. This preserves the command behavior while reducing coupling between SDK timeouts and GUI responsiveness.
+The command-channel packet-capture diagnosis also has implications for RC control. Query commands such as `battery?` wait for a response, so a delayed or missing UDP response appears as a timeout, retry, or recovered transient outage. RC commands are different: they are sent continuously through a no-wait path and are not acknowledged by the API on every packet. A single lost RC packet is usually harmless because the dedicated worker sends another RC command shortly afterward. A longer UDP outage is more important. If the last RC command received by the drone was nonzero and neutral `rc 0 0 0 0` packets are delayed or lost, the drone may continue the previous motion until it receives a newer RC command. This is why the implementation emphasizes an independent RC worker, repeated neutral output when no input is active, stale-input detection, and high-priority neutral RC before critical commands. Future closed-loop control should treat command-channel freshness as a safety signal, not only as a logging metric.
+
+To support this, the core metrics layer now exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the same signal can be exposed later through ROS.
+
+For closed-loop control, this link-quality signal should be treated as a gating input. When quality is `OK`, normal command output can proceed. When quality is `DEGRADED`, a controller should consider reducing command magnitude, increasing neutral-command repetition, or holding the previous safe setpoint only briefly. When quality becomes `STALE` or `BLACKOUT`, the controller should avoid sustained nonzero RC and should prefer neutral RC, hover, landing, or emergency behavior depending on the flight context. The important point is that communication health becomes part of the control decision rather than only a post-run diagnostic.
+
+The GUI timing analysis initially showed that blocking critical command calls could affect responsiveness when their timeout result was logged. To address this, the Control Panel was updated so critical commands and stream/recovery commands run in a background command worker and report results back to the GUI through queued callbacks. The repeated E7 run showed that GUI timer delays remained close to their expected periods even though the `takeoff` command still timed out at the SDK response layer. This confirms the intended separation between command waiting and GUI responsiveness.
 
 Recovery behavior is also important because real Wi-Fi and drone power states are not perfectly stable. The power-cycle experiment showed that the system can detect a stalled video/session state and recover after SDK re-entry and stream restart.
 
@@ -420,7 +447,7 @@ The project has several limitations:
 
 1. Experiments were performed with a single DJI Tello drone and one test environment.
 2. Wi-Fi conditions are environment-dependent and may vary across rooms, laptops, and drivers.
-3. The RC reaction latency estimate is based on onboard telemetry, not external motion capture.
+3. The RC reaction latency estimate is based on onboard telemetry, not external motion capture. Lateral and forward/backward response estimates use attitude proxies because direct SDK translational velocity fields did not provide reliable movement evidence in the repeated keyboard-flight run.
 4. The current system does not implement a closed-loop controller.
 5. The ROS2 bridge is not implemented yet.
 6. Some command responses, especially around `takeoff` and `land`, can be delayed or time out even when the drone physically executes the action. The GUI no longer waits for these responses on the main event loop, but the underlying SDK ambiguity remains.
@@ -436,8 +463,9 @@ The planned ROS2 package should:
 2. publish telemetry topics;
 3. publish camera frames if feasible;
 4. subscribe to velocity or RC command inputs;
-5. expose takeoff, land, and emergency services;
-6. preserve the existing safety behavior around neutral RC and critical commands.
+5. publish aggregate link quality and the `safe_for_nonzero_rc` control hint;
+6. expose takeoff, land, and emergency services;
+7. preserve the existing safety behavior around neutral RC and critical commands.
 
 This future work will make the project usable from standard robotics tools and provide a bridge toward future closed-loop control experiments.
 

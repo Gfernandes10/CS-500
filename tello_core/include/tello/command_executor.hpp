@@ -22,6 +22,14 @@ public:
         int32_t retry_delay_ms = 100;     ///< Delay between retries (default: 100ms)
     };
 
+    /// Timing breakdown for the latest command executor call.
+    struct TimingStats {
+        int64_t total_ms = 0;       ///< Full executor call duration.
+        int64_t send_ms = 0;        ///< Time spent sending UDP datagrams.
+        int64_t recv_wait_ms = 0;   ///< Time spent waiting for UDP responses.
+        int64_t parse_ms = 0;       ///< Time spent parsing received responses.
+    };
+
     /// Constructor
     /// @param socket Shared pointer to UDP socket (must be open and configured).
     explicit CommandExecutor(std::shared_ptr<UdpSocket> socket);
@@ -46,7 +54,12 @@ public:
 
     /// Execute a command once and capture the response string.
     /// This is intended for non-idempotent commands such as takeoff/land.
-    ResponseCode executeCommandWithResponseSingleAttempt(const std::string& command, std::string& response);
+    /// @param timeout_ms Optional per-call timeout override; negative keeps current config.
+    ResponseCode executeCommandWithResponseSingleAttempt(
+        const std::string& command,
+        std::string& response,
+        int32_t timeout_ms = -1
+    );
 
     /// Get the last response received (useful for debugging).
     /// @return Last response string.
@@ -59,6 +72,10 @@ public:
     /// Get a compact diagnostic trace for the latest command attempts.
     /// @return Semicolon-separated attempt diagnostics.
     std::string getLastAttemptLog() const;
+
+    /// Get timing breakdown for the latest command executor call.
+    /// @return Latest command executor timing stats.
+    TimingStats getLastTimingStats() const;
 
     /// Check if the last response indicates success.
     /// @return True if response is "ok", false otherwise.
@@ -75,6 +92,7 @@ private:
     std::string last_response_;             ///< Last response received
     std::string last_error_;                ///< Last error message
     std::string last_attempt_log_;          ///< Compact latest attempt diagnostics
+    TimingStats last_timing_;               ///< Latest command timing breakdown
 
     /// Parse response and determine if it indicates success.
     /// @param response Raw response string.

@@ -244,8 +244,16 @@ Para uso em outras máquinas, as opções mais simples são:
 ## Uso recomendado com tello_ros2
 
 O workspace `tello_ros2` possui o pacote `tello_core_vendor`. Durante o
-`colcon build`, ele baixa o `.tar.gz`, extrai o runtime dentro do próprio
-prefixo do workspace e permite que o `tello_driver` use:
+`colcon build`, ele primeiro tenta encontrar uma versão compatível já disponível
+para o CMake:
+
+```cmake
+find_package(tello_core 1.0.0 CONFIG QUIET)
+```
+
+Se encontrar, ele pula o download. Se não encontrar, baixa o `.tar.gz`, extrai
+o runtime dentro do próprio prefixo do workspace e permite que o `tello_driver`
+use:
 
 ```cmake
 find_package(tello_core REQUIRED)
@@ -259,6 +267,16 @@ cd "/home/gabriel_fernandes/CS 500 - ROS"
 colcon build --cmake-args \
   -DTELLO_CORE_VERSION=1.0.0 \
   -DTELLO_CORE_RELEASE_BASE_URL=https://github.com/<usuario>/<repo>/releases/download
+```
+
+Para forçar um download/reinstall mesmo quando já existe um `tello_core`
+compatível:
+
+```bash
+colcon build --cmake-args \
+  -DTELLO_CORE_VERSION=1.0.0 \
+  -DTELLO_CORE_RELEASE_BASE_URL=https://github.com/<usuario>/<repo>/releases/download \
+  -DTELLO_CORE_VENDOR_FORCE_DOWNLOAD=ON
 ```
 
 Com esses parametros, o vendor monta automaticamente:

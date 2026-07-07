@@ -67,6 +67,25 @@ Major field groups:
 7. Decoder stats
 8. Display state (`frame_width`, `frame_height`, `keyframes`, `paused`, `overlay_enabled`)
 9. Recovery/event/connection-state fields
+10. Aggregate link quality (`link_quality`, `link_quality_score`, `link_safe_for_nonzero_rc`, and component labels)
+
+## Aggregate Link Quality For Control
+`MetricsCollector` now computes a reusable link-quality snapshot in the core library. The snapshot is intended for the Qt Control Panel today and for ROS/control packages later.
+
+The aggregate quality combines the currently relevant transport channels:
+1. telemetry freshness and interarrival timing;
+2. video freshness when video is active;
+3. command/keepalive health;
+4. RC send cadence while RC streaming or keyboard control is active.
+
+The labels are:
+1. `OK`: data is fresh and packet/frame spacing is within the expected bounds.
+2. `DEGRADED`: data is still usable, but recent spacing or command recovery indicates reduced margin.
+3. `STALE`: the latest data is too old for confident control decisions.
+4. `BLACKOUT`: active RC has a long packet gap, which is unsafe for sustained nonzero RC.
+5. `NO_DATA`: no relevant samples have been received yet.
+
+The field `link_safe_for_nonzero_rc` is a conservative control hint. A controller can use it to decide whether nonzero RC commands are allowed. If it is false, the safer behavior is to reduce command magnitude, send repeated neutral `rc 0 0 0 0`, hover, or abort depending on the operating mode. This field does not replace controller-specific safety logic; it provides a shared signal so GUI, CLI, and future ROS components can react consistently to link degradation.
 
 ## CSV Schema (CLI Video-Watch)
 1. test_id

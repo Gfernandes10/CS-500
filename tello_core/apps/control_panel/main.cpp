@@ -101,7 +101,7 @@ bool contains(const UiButton& button, int x, int y) {
 
 bool connectSdk(AppState& state) {
     if (!state.client.isInitialized()) {
-        const tello::ResponseCode init_rc = state.client.initialize("192.168.10.1", 8889, 9000);
+        const tello::ResponseCode init_rc = state.client.initialize("192.168.10.1", 8889, 8889);
         appendLog(state, "initialize: " + responseCodeToString(init_rc));
         if (init_rc != tello::ResponseCode::OK) {
             state.sdk_ready = false;

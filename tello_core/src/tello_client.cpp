@@ -11,6 +11,27 @@ bool isCriticalControlCommand(const std::string& command) {
     return command == "takeoff" || command == "land" || command == "emergency";
 }
 
+std::string responseCodeToString(ResponseCode rc) {
+    switch (rc) {
+    case ResponseCode::OK:
+        return "OK";
+    case ResponseCode::ERROR:
+        return "ERROR";
+    case ResponseCode::TIMEOUT:
+        return "TIMEOUT";
+    case ResponseCode::PARSE_ERROR:
+        return "PARSE_ERROR";
+    }
+    return "UNKNOWN";
+}
+
+bool attemptLogHasFailure(const std::string& log) {
+    return log.find("TIMEOUT") != std::string::npos
+        || log.find("PARSE_ERROR") != std::string::npos
+        || log.find("|parsed=ERROR") != std::string::npos
+        || log.find("|send=ERROR") != std::string::npos;
+}
+
 class ForegroundCommandScope {
 public:
     explicit ForegroundCommandScope(std::atomic<int32_t>& counter)
@@ -39,13 +60,23 @@ TelloClient::TelloClient()
     pending_event_(ConnectionEvent::NONE),
     drone_ip_("192.168.10.1"),
     drone_port_(8889),
-    local_port_(9000),
+    local_port_(8889),
     last_video_recovery_attempt_tp_(std::chrono::steady_clock::now()),
     has_last_video_recovery_attempt_(false),
     command_socket_(nullptr),
     command_executor_(nullptr),
     foreground_command_requests_(0),
     last_command_mutex_wait_ms_(0),
+    last_command_client_total_ms_(0),
+    last_ensure_sdk_mode_ms_(0),
+    last_command_executor_ms_(0),
+    last_command_executor_recv_wait_total_ms_(0),
+    last_command_executor_internal_total_ms_(0),
+    last_command_recovery_ms_(0),
+    last_command_executor_calls_(0),
+    last_command_recovery_count_(0),
+    last_command_transient_failure_count_(0),
+    last_command_internal_attempt_log_(),
     keepalive_running_(false),
     keepalive_thread_(),
     keepalive_mutex_(),
@@ -401,7 +432,10 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
 
     std::string response;
     ResponseCode rc = critical_control_command
-        ? command_executor_->executeCommandWithResponseSingleAttempt(command, response)
+        ? command_executor_->executeCommandWithResponseSingleAttempt(
+              command,
+              response,
+              reliability_config_.critical_command_timeout_ms)
         : command_executor_->executeCommand(command);
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
@@ -451,74 +485,156 @@ ResponseCode TelloClient::sendCommand(const std::string& command) {
 }
 
 ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, std::string& response) {
+    const auto client_started_at = std::chrono::steady_clock::now();
+    auto finish = [&](ResponseCode rc) {
+        if (rc == ResponseCode::OK && last_command_transient_failure_count_.load() > 0) {
+            pending_event_.store(ConnectionEvent::TRANSIENT_LOSS_RECOVERED);
+            connection_state_.store(ConnectionState::CONNECTED);
+        }
+        last_command_client_total_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - client_started_at).count());
+        return rc;
+    };
+
     ForegroundCommandScope foreground_scope(foreground_command_requests_);
     const auto mutex_wait_started_at = std::chrono::steady_clock::now();
     std::lock_guard<std::recursive_mutex> lock(command_mutex_);
     last_command_mutex_wait_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - mutex_wait_started_at).count());
+    last_ensure_sdk_mode_ms_.store(0);
+    last_command_executor_ms_.store(0);
+    last_command_executor_recv_wait_total_ms_.store(0);
+    last_command_executor_internal_total_ms_.store(0);
+    last_command_recovery_ms_.store(0);
+    last_command_executor_calls_.store(0);
+    last_command_recovery_count_.store(0);
+    last_command_transient_failure_count_.store(0);
+    last_command_internal_attempt_log_.clear();
+
+    auto record_executor_call = [&](const std::string& executor_command,
+                                    std::string& executor_response,
+                                    bool single_attempt,
+                                    int32_t timeout_override_ms = -1) {
+        const auto executor_started_at = std::chrono::steady_clock::now();
+        const ResponseCode executor_rc = single_attempt
+            ? command_executor_->executeCommandWithResponseSingleAttempt(
+                  executor_command,
+                  executor_response,
+                  timeout_override_ms)
+            : command_executor_->executeCommandWithResponse(executor_command, executor_response);
+        const auto executor_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - executor_started_at).count();
+        const auto timing = command_executor_->getLastTimingStats();
+        const std::string attempt_log = command_executor_->getLastAttemptLog();
+        last_command_executor_ms_.fetch_add(executor_elapsed_ms);
+        last_command_executor_recv_wait_total_ms_.fetch_add(timing.recv_wait_ms);
+        last_command_executor_internal_total_ms_.fetch_add(timing.total_ms);
+        last_command_executor_calls_.fetch_add(1);
+        if (executor_rc != ResponseCode::OK || attemptLogHasFailure(attempt_log)) {
+            last_command_transient_failure_count_.fetch_add(1);
+        }
+        if (!last_command_internal_attempt_log_.empty()) {
+            last_command_internal_attempt_log_ += ";";
+        }
+        last_command_internal_attempt_log_ += "executor_call="
+            + std::to_string(last_command_executor_calls_.load())
+            + "|command=" + executor_command
+            + "|result=" + responseCodeToString(executor_rc)
+            + "|response=" + executor_response
+            + "|elapsed_ms=" + std::to_string(executor_elapsed_ms)
+            + "|timing_total_ms=" + std::to_string(timing.total_ms)
+            + "|recv_wait_ms=" + std::to_string(timing.recv_wait_ms)
+            + "|attempt_log=[" + attempt_log + "]";
+        return executor_rc;
+    };
+
+    auto record_recovery_call = [&]() {
+        const auto recovery_started_at = std::chrono::steady_clock::now();
+        const ResponseCode recovery_rc = recoverCommandSession();
+        const auto recovery_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - recovery_started_at).count();
+        last_command_recovery_ms_.fetch_add(recovery_elapsed_ms);
+        last_command_recovery_count_.fetch_add(1);
+        if (recovery_rc != ResponseCode::OK) {
+            last_command_transient_failure_count_.fetch_add(1);
+        }
+        if (!last_command_internal_attempt_log_.empty()) {
+            last_command_internal_attempt_log_ += ";";
+        }
+        last_command_internal_attempt_log_ += "recovery_call="
+            + std::to_string(last_command_recovery_count_.load())
+            + "|result=" + responseCodeToString(recovery_rc)
+            + "|elapsed_ms=" + std::to_string(recovery_elapsed_ms);
+        return recovery_rc;
+    };
 
     response.clear();
     if (!initialized_ || command_executor_ == nullptr) {
-        return ResponseCode::ERROR;
+        return finish(ResponseCode::ERROR);
     }
 
     const bool is_sdk_command = (command == "command");
     const bool expects_query_payload = !command.empty() && command.back() == '?';
     const bool critical_control_command = isCriticalControlCommand(command);
 
+    const auto ensure_started_at = std::chrono::steady_clock::now();
     const ResponseCode sdk_rc = ensureSdkMode();
+    last_ensure_sdk_mode_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - ensure_started_at).count());
     if (sdk_rc != ResponseCode::OK) {
         if (consecutive_failures_ >= reliability_config_.recovery_threshold) {
-            const ResponseCode recovery_rc = recoverCommandSession();
+            const ResponseCode recovery_rc = record_recovery_call();
             if (recovery_rc != ResponseCode::OK) {
                 const ResponseCode reinit_rc = initialize(drone_ip_, drone_port_, local_port_);
                 if (reinit_rc != ResponseCode::OK) {
-                    return recovery_rc;
+                    return finish(recovery_rc);
                 }
 
                 const ResponseCode reinit_sdk_rc = enterSdkMode();
                 if (reinit_sdk_rc != ResponseCode::OK) {
-                    return recovery_rc;
+                    return finish(recovery_rc);
                 }
             }
         } else {
-            return sdk_rc;
+            return finish(sdk_rc);
         }
     }
 
-    ResponseCode rc = critical_control_command
-        ? command_executor_->executeCommandWithResponseSingleAttempt(command, response)
-        : command_executor_->executeCommandWithResponse(command, response);
+    ResponseCode rc = record_executor_call(
+        command,
+        response,
+        critical_control_command,
+        critical_control_command ? reliability_config_.critical_command_timeout_ms : -1);
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
-        return rc;
+        return finish(rc);
     }
 
     // Keep channel state stable on ambiguous control-command "error" replies,
     // so a following safety command (for example, land) is not penalized.
     if (rc == ResponseCode::ERROR && !expects_query_payload && !is_sdk_command) {
-        return rc;
+        return finish(rc);
     }
 
     // Critical flight commands may already be executing when the ack is lost.
     // Return the result to the caller and let telemetry/operator flow decide.
     if (critical_control_command) {
-        return rc;
+        return finish(rc);
     }
 
     sdk_mode_confirmed_ = false;
     markCommandFailure();
     if (consecutive_failures_ >= reliability_config_.recovery_threshold) {
-        const ResponseCode recovery_rc = recoverCommandSession();
+        const ResponseCode recovery_rc = record_recovery_call();
         if (recovery_rc != ResponseCode::OK) {
-            return recovery_rc;
+            return finish(recovery_rc);
         }
 
         response.clear();
-        rc = command_executor_->executeCommandWithResponse(command, response);
+        rc = record_executor_call(command, response, false);
         if (rc == ResponseCode::OK) {
             markCommandSuccess();
-            return rc;
+            return finish(rc);
         } else {
             markCommandFailure();
         }
@@ -526,10 +642,10 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
 
     // For command queries, one direct recovery retry helps after Wi-Fi reassociation.
     if (rc == ResponseCode::TIMEOUT) {
-        const ResponseCode recovery_rc = recoverCommandSession();
+        const ResponseCode recovery_rc = record_recovery_call();
         if (recovery_rc == ResponseCode::OK) {
             response.clear();
-            rc = command_executor_->executeCommandWithResponse(command, response);
+            rc = record_executor_call(command, response, false);
             if (rc == ResponseCode::OK) {
                 markCommandSuccess();
             } else {
@@ -539,16 +655,16 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
             // Last resort: fully reinitialize command channel from stored settings.
             const ResponseCode reinit_rc = initialize(drone_ip_, drone_port_, local_port_);
             if (reinit_rc != ResponseCode::OK) {
-                return recovery_rc;
+                return finish(recovery_rc);
             }
 
             const ResponseCode reinit_sdk_rc = enterSdkMode();
             if (reinit_sdk_rc != ResponseCode::OK) {
-                return recovery_rc;
+                return finish(recovery_rc);
             }
 
             response.clear();
-            rc = command_executor_->executeCommandWithResponse(command, response);
+            rc = record_executor_call(command, response, false);
             if (rc == ResponseCode::OK) {
                 markCommandSuccess();
             } else {
@@ -557,10 +673,11 @@ ResponseCode TelloClient::sendCommandWithResponse(const std::string& command, st
         }
     }
 
-    return rc;
+    return finish(rc);
 }
 
 ResponseCode TelloClient::sendCommandNoWait(const std::string& command) {
+    const auto client_started_at = std::chrono::steady_clock::now();
     ForegroundCommandScope foreground_scope(foreground_command_requests_);
     const auto mutex_wait_started_at = std::chrono::steady_clock::now();
     std::unique_lock<std::recursive_mutex> lock(command_mutex_, std::try_to_lock);
@@ -569,14 +686,40 @@ ResponseCode TelloClient::sendCommandNoWait(const std::string& command) {
 
     if (!lock.owns_lock()) {
         last_command_mutex_wait_ms_.store(-1);
+        last_command_client_total_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - client_started_at).count());
         return ResponseCode::TIMEOUT;
     }
 
+    last_ensure_sdk_mode_ms_.store(0);
+    last_command_executor_ms_.store(0);
+    last_command_executor_recv_wait_total_ms_.store(0);
+    last_command_executor_internal_total_ms_.store(0);
+    last_command_recovery_ms_.store(0);
+    last_command_executor_calls_.store(0);
+    last_command_recovery_count_.store(0);
+    last_command_transient_failure_count_.store(0);
+    last_command_internal_attempt_log_.clear();
+
     if (!initialized_ || command_executor_ == nullptr) {
+        last_command_client_total_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - client_started_at).count());
+        last_command_internal_attempt_log_ = "no_wait|command=" + command + "|result=ERROR|reason=uninitialized";
         return ResponseCode::ERROR;
     }
 
     const ResponseCode rc = command_executor_->sendCommandNoWait(command);
+    const auto timing = command_executor_->getLastTimingStats();
+    last_command_executor_calls_.store(1);
+    last_command_executor_ms_.store(timing.total_ms);
+    last_command_executor_recv_wait_total_ms_.store(timing.recv_wait_ms);
+    last_command_executor_internal_total_ms_.store(timing.total_ms);
+    last_command_client_total_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - client_started_at).count());
+    last_command_internal_attempt_log_ =
+        "no_wait|command=" + command
+        + "|result=" + responseCodeToString(rc)
+        + "|attempt_log=[" + command_executor_->getLastAttemptLog() + "]";
     if (rc == ResponseCode::OK) {
         markCommandSuccess();
     } else {
@@ -646,6 +789,43 @@ bool TelloClient::isSdkKeepaliveRunning() const {
 
 int64_t TelloClient::getLastCommandMutexWaitMs() const {
     return last_command_mutex_wait_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandClientTotalMs() const {
+    return last_command_client_total_ms_.load();
+}
+
+int64_t TelloClient::getLastEnsureSdkModeMs() const {
+    return last_ensure_sdk_mode_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandExecutorMs() const {
+    return last_command_executor_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandExecutorRecvWaitTotalMs() const {
+    return last_command_executor_recv_wait_total_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandExecutorInternalTotalMs() const {
+    return last_command_executor_internal_total_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandRecoveryMs() const {
+    return last_command_recovery_ms_.load();
+}
+
+int64_t TelloClient::getLastCommandExecutorCalls() const {
+    return last_command_executor_calls_.load();
+}
+
+int64_t TelloClient::getLastCommandRecoveryCount() const {
+    return last_command_recovery_count_.load();
+}
+
+std::string TelloClient::getLastCommandInternalAttemptLog() const {
+    std::lock_guard<std::recursive_mutex> lock(command_mutex_);
+    return last_command_internal_attempt_log_;
 }
 
 TelloClient::KeepaliveStats TelloClient::getSdkKeepaliveStats() const {
@@ -770,6 +950,9 @@ void TelloClient::setReliabilityConfig(const ReliabilityConfig& config) {
     }
     if (reliability_config_.command_timeout_ms < 0) {
         reliability_config_.command_timeout_ms = 0;
+    }
+    if (reliability_config_.critical_command_timeout_ms < 0) {
+        reliability_config_.critical_command_timeout_ms = 0;
     }
     if (reliability_config_.command_retry_delay_ms < 0) {
         reliability_config_.command_retry_delay_ms = 0;

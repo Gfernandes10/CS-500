@@ -201,7 +201,7 @@ Measure command-channel reliability while the drone is idle. This tells us wheth
 cd tello_core
 ./build/tello_cli --watch \
   --interval-ms 1000 \
-  --duration-s 60 \
+  --duration-s 120 \
   --metrics-csv ../results/E2-CMD-BASE-001.csv \
   --test-id E2-CMD-BASE-001 \
   --scenario command-baseline \
@@ -239,7 +239,7 @@ Measure telemetry freshness without Qt, plotting, or video rendering. This is th
 cd tello_core
 ./build/tello_cli --state-watch \
   --interval-ms 250 \
-  --duration-s 180 \
+  --duration-s 150 \
   --metrics-csv ../results/E3-STATE-CLI-001.csv \
   --test-id E3-STATE-CLI-001 \
   --scenario telemetry-cli-baseline \

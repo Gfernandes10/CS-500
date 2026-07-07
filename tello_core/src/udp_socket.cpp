@@ -51,10 +51,6 @@ ResponseCode UdpSocket::open(const SocketConfig& config) {
         return ResponseCode::ERROR;
     }
 
-    // Allow quick rebinds to the same local port between process restarts.
-    const int reuse = 1;
-    (void)::setsockopt(socket_fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
     // Optional fixed local bind for command channel stability across runs.
     if (config.local_port != 0) {
         sockaddr_in local_addr{};

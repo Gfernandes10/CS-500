@@ -1,5 +1,6 @@
 #include "tello/metrics.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace tello {
@@ -48,6 +49,104 @@ QualityEstimate estimateTransportQuality(
     return {"STALE", 0};
 }
 
+int qualitySeverity(const std::string& label) {
+    if (label == "BLACKOUT") {
+        return 4;
+    }
+    if (label == "STALE") {
+        return 3;
+    }
+    if (label == "DEGRADED") {
+        return 2;
+    }
+    if (label == "NO_DATA") {
+        return 1;
+    }
+    return 0;
+}
+
+int32_t qualityScore(const std::string& label) {
+    if (label == "OK") {
+        return 100;
+    }
+    if (label == "DEGRADED") {
+        return 60;
+    }
+    return 0;
+}
+
+std::string estimateRcQuality(bool rc_active, int64_t gap_ms, int64_t expected_period_ms) {
+    if (!rc_active) {
+        return "NO_DATA";
+    }
+    if (gap_ms < 0) {
+        return "NO_DATA";
+    }
+
+    const int64_t expected_ms = std::max<int64_t>(expected_period_ms, 1);
+    const int64_t ok_limit = std::max<int64_t>(200, expected_ms * 4);
+    if (gap_ms <= ok_limit) {
+        return "OK";
+    }
+    if (gap_ms <= 1000) {
+        return "DEGRADED";
+    }
+    if (gap_ms <= 2000) {
+        return "STALE";
+    }
+    return "BLACKOUT";
+}
+
+std::string estimateCommandQuality(const MetricsCollector::Snapshot& snapshot) {
+    constexpr int64_t kCommandIssueFreshMs = 5000;
+    const bool has_command = snapshot.command_samples > 0;
+    const bool has_keepalive = snapshot.keepalive_tick_total > 0 || snapshot.keepalive_running;
+    if (!has_command && !has_keepalive) {
+        return "NO_DATA";
+    }
+
+    const bool live_transport_available =
+        snapshot.telemetry_quality == "OK"
+        || snapshot.telemetry_quality == "DEGRADED"
+        || snapshot.video_quality == "OK"
+        || snapshot.video_quality == "DEGRADED"
+        || snapshot.link_quality.rc == "OK"
+        || snapshot.link_quality.rc == "DEGRADED"
+        || (snapshot.keepalive_last_result == ResponseCode::OK
+            && (snapshot.keepalive_last_success_age_ms >= 0
+                && snapshot.keepalive_last_success_age_ms <= 10000));
+    const bool recent_command_issue =
+        snapshot.last_command_age_ms >= 0
+        && snapshot.last_command_age_ms <= kCommandIssueFreshMs;
+    const bool telemetry_confirmed =
+        snapshot.last_response.find("telemetry_confirmed") != std::string::npos;
+
+    if (telemetry_confirmed && live_transport_available) {
+        return "OK";
+    }
+
+    if (has_command && snapshot.last_command_result != ResponseCode::OK && recent_command_issue) {
+        return live_transport_available ? "DEGRADED" : "STALE";
+    }
+
+    // Keepalive is intentionally stopped during keyboard/continuous RC and critical commands.
+    // Only use keepalive age as a current-health signal while the keepalive loop is active.
+    if (snapshot.keepalive_running && snapshot.keepalive_last_success_age_ms > 10000) {
+        return "STALE";
+    }
+    if (snapshot.keepalive_running
+        && snapshot.keepalive_tick_total > 0
+        && snapshot.keepalive_last_result != ResponseCode::OK) {
+        return "DEGRADED";
+    }
+    if ((snapshot.command_timeout_count > 0
+         || snapshot.command_recovery_count > 0)
+        && recent_command_issue) {
+        return "DEGRADED";
+    }
+    return "OK";
+}
+
 std::string csvEscape(const std::string& value) {
     // CSV escaping preserves commas, quotes, and newlines inside text fields.
     bool needs_quotes = false;
@@ -75,16 +174,101 @@ std::string csvEscape(const std::string& value) {
     return out.str();
 }
 
+uint64_t countOccurrences(const std::string& text, const std::string& pattern) {
+    if (pattern.empty()) {
+        return 0;
+    }
+
+    uint64_t count = 0;
+    std::string::size_type pos = 0;
+    while ((pos = text.find(pattern, pos)) != std::string::npos) {
+        ++count;
+        pos += pattern.size();
+    }
+    return count;
+}
+
 } // namespace
 
 MetricsCollector::MetricsCollector()
     // Constructor starts with an empty snapshot and default metadata.
     : mutex_(), snapshot_() {}
 
+void MetricsCollector::recomputeLinkQualityLocked() {
+    // Overall quality summarizes the channels that are currently relevant to operation.
+    auto& link = snapshot_.link_quality;
+    link.telemetry = snapshot_.telemetry_quality;
+    link.video = snapshot_.video_quality;
+    link.rc = estimateRcQuality(
+        snapshot_.rc_stream_active,
+        link.rc_packet_gap_ms,
+        link.rc_expected_period_ms);
+    link.command = estimateCommandQuality(snapshot_);
+
+    std::string overall = "NO_DATA";
+    int worst_severity = -1;
+    int active_components = 0;
+    int live_components = 0;
+    std::ostringstream reason;
+
+    auto consider = [&](const std::string& name, const std::string& quality, bool active) {
+        if (!active) {
+            return;
+        }
+        ++active_components;
+        if (reason.tellp() > 0) {
+            reason << "; ";
+        }
+        reason << name << '=' << quality;
+        if (quality == "NO_DATA") {
+            return;
+        }
+        ++live_components;
+        const int severity = qualitySeverity(quality);
+        if (severity > worst_severity || live_components == 1) {
+            worst_severity = severity;
+            overall = quality;
+        }
+    };
+
+    consider("telemetry", link.telemetry, snapshot_.telemetry.packets_total > 0);
+    consider("video", link.video, snapshot_.video_rx.packets_total > 0);
+    consider("command", link.command, link.command != "NO_DATA");
+    consider("rc", link.rc, snapshot_.rc_stream_active);
+
+    if (active_components == 0 || live_components == 0) {
+        overall = "NO_DATA";
+        if (reason.tellp() > 0) {
+            reason << "; ";
+        }
+        reason << "no telemetry, video, command, or active RC samples";
+    }
+
+    link.overall = overall;
+    link.score = qualityScore(overall);
+    link.reason = reason.str();
+
+    const bool telemetry_safe =
+        link.telemetry == "OK" || link.telemetry == "DEGRADED";
+    const bool command_safe =
+        link.command == "NO_DATA" || link.command == "OK" || link.command == "DEGRADED";
+    const bool rc_safe =
+        !snapshot_.rc_stream_active || link.rc == "OK" || link.rc == "DEGRADED";
+    link.safe_for_nonzero_rc =
+        telemetry_safe
+        && command_safe
+        && rc_safe
+        && !link.rc_safety_override_active
+        && overall != "STALE"
+        && overall != "BLACKOUT"
+        && overall != "NO_DATA";
+}
+
 void MetricsCollector::reset() {
     // Reset returns the collector to an empty snapshot for a new run.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_ = Snapshot{};
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::setExperimentMetadata(const ExperimentMetadata& metadata) {
@@ -97,6 +281,12 @@ void MetricsCollector::setElapsedMs(int64_t elapsed_ms) {
     // Elapsed time is stored by the caller because each app owns its run clock.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.elapsed_ms = elapsed_ms;
+    if (snapshot_.last_command_elapsed_ms >= 0) {
+        snapshot_.last_command_age_ms = elapsed_ms >= snapshot_.last_command_elapsed_ms
+            ? elapsed_ms - snapshot_.last_command_elapsed_ms
+            : 0;
+    }
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::setAttempt(uint64_t attempt) {
@@ -117,6 +307,9 @@ void MetricsCollector::recordCommandResult(
     snapshot_.last_command = command;
     snapshot_.last_response = response;
     snapshot_.last_command_result = result;
+    snapshot_.last_command_latency_ms = latency_ms;
+    snapshot_.last_command_elapsed_ms = snapshot_.elapsed_ms;
+    snapshot_.last_command_age_ms = 0;
     snapshot_.command_samples += 1;
 
     if (result == ResponseCode::OK) {
@@ -129,6 +322,7 @@ void MetricsCollector::recordCommandResult(
         snapshot_.command_latency_ms_avg = latency_ms;
         snapshot_.command_latency_ms_min = latency_ms;
         snapshot_.command_latency_ms_max = latency_ms;
+        recomputeLinkQualityLocked();
         return;
     }
 
@@ -143,18 +337,59 @@ void MetricsCollector::recordCommandResult(
     if (latency_ms > snapshot_.command_latency_ms_max) {
         snapshot_.command_latency_ms_max = latency_ms;
     }
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::updateCommandDiagnostics(
     const std::string& source,
     const std::string& executor_last_error,
-    const std::string& executor_attempt_log
+    const std::string& executor_attempt_log,
+    const std::string& internal_attempt_log
 ) {
     // Command diagnostics identify who sent the command and executor detail text.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.command_source = source;
     snapshot_.command_executor_last_error = executor_last_error;
     snapshot_.command_executor_attempt_log = executor_attempt_log;
+    snapshot_.command_internal_attempt_log = internal_attempt_log;
+    const std::string& count_log = internal_attempt_log.empty()
+        ? executor_attempt_log
+        : internal_attempt_log;
+    snapshot_.command_attempt_count = countOccurrences(count_log, "attempt=");
+    snapshot_.command_retry_count = snapshot_.command_attempt_count > 0
+        ? snapshot_.command_attempt_count - 1
+        : 0;
+    snapshot_.command_timeout_count = countOccurrences(count_log, "raw=|result=TIMEOUT");
+    recomputeLinkQualityLocked();
+}
+
+void MetricsCollector::updateCommandTimingDiagnostics(
+    int64_t client_total_ms,
+    int64_t ensure_sdk_ms,
+    int64_t executor_total_ms,
+    int64_t send_ms,
+    int64_t recv_wait_ms,
+    int64_t parse_ms,
+    int64_t executor_recv_wait_total_ms,
+    int64_t executor_internal_total_ms,
+    int64_t recovery_ms,
+    int64_t executor_calls,
+    int64_t recovery_count
+) {
+    // Command timing diagnostics split API latency into client/executor/socket stages.
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.command_client_total_ms = client_total_ms;
+    snapshot_.command_ensure_sdk_ms = ensure_sdk_ms;
+    snapshot_.command_executor_total_ms = executor_total_ms;
+    snapshot_.command_send_ms = send_ms;
+    snapshot_.command_recv_wait_ms = recv_wait_ms;
+    snapshot_.command_parse_ms = parse_ms;
+    snapshot_.command_executor_recv_wait_total_ms = executor_recv_wait_total_ms;
+    snapshot_.command_executor_internal_total_ms = executor_internal_total_ms;
+    snapshot_.command_recovery_ms = recovery_ms;
+    snapshot_.command_executor_calls = executor_calls;
+    snapshot_.command_recovery_count = recovery_count;
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::updateTelemetryStats(const StateReceiver::TelemetryStats& stats) {
@@ -168,6 +403,7 @@ void MetricsCollector::updateTelemetryStats(const StateReceiver::TelemetryStats&
     );
     snapshot_.telemetry_quality = quality.label;
     snapshot_.telemetry_quality_score = quality.score;
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::updateTelemetryState(const TelloState& state, bool available) {
@@ -205,6 +441,7 @@ void MetricsCollector::updateVideoTransportStats(const VideoTransportStats& stat
     );
     snapshot_.video_quality = quality.label;
     snapshot_.video_quality_score = quality.score;
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::setVideoPacketDelta(uint64_t delta) {
@@ -333,6 +570,24 @@ void MetricsCollector::updateRuntimeContext(
     snapshot_.keepalive_running = keepalive_running;
     snapshot_.auto_refresh_active = auto_refresh_active;
     snapshot_.critical_command_active = critical_command_active;
+    recomputeLinkQualityLocked();
+}
+
+void MetricsCollector::updateRcLinkStats(
+    int64_t rc_packet_gap_ms,
+    int64_t rc_expected_period_ms,
+    uint64_t rc_blackout_count,
+    int64_t rc_last_nonzero_age_ms,
+    bool rc_safety_override_active
+) {
+    // RC cadence diagnostics expose whether neutral/nonzero control packets are arriving regularly.
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.link_quality.rc_packet_gap_ms = rc_packet_gap_ms;
+    snapshot_.link_quality.rc_expected_period_ms = rc_expected_period_ms;
+    snapshot_.link_quality.rc_blackout_count = rc_blackout_count;
+    snapshot_.link_quality.rc_last_nonzero_age_ms = rc_last_nonzero_age_ms;
+    snapshot_.link_quality.rc_safety_override_active = rc_safety_override_active;
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::updateKeepaliveStats(
@@ -361,6 +616,7 @@ void MetricsCollector::updateKeepaliveStats(
     snapshot_.keepalive_last_latency_ms = last_latency_ms;
     snapshot_.keepalive_last_success_age_ms = last_success_age_ms;
     snapshot_.keepalive_last_tick_age_ms = last_tick_age_ms;
+    recomputeLinkQualityLocked();
 }
 
 void MetricsCollector::updateCriticalCommandDurations(
@@ -415,13 +671,23 @@ MetricsCollector::Snapshot MetricsCollector::getSnapshot() const {
     return snapshot_;
 }
 
+MetricsCollector::LinkQualitySnapshot MetricsCollector::getLinkQualitySnapshot() const {
+    // Link-quality reads return only the aggregate state needed by operators/controllers.
+    std::lock_guard<std::mutex> lock(mutex_);
+    return snapshot_.link_quality;
+}
+
 std::string MetricsCollector::toCsvHeader() const {
     // Header is intentionally stable so all MetricsCollector CSV rows align.
     return "test_id,scenario,notes,run_mode,elapsed_ms,"
            "attempt,"
            "command_samples,command_successes,command_failures,"
            "command_latency_ms_avg,command_latency_ms_min,command_latency_ms_max,"
-           "last_command,last_response,last_command_result,command_source,command_executor_last_error,command_executor_attempt_log,"
+           "last_command_latency_ms,last_command_elapsed_ms,last_command_age_ms,"
+           "command_attempt_count,command_retry_count,command_timeout_count,"
+           "command_client_total_ms,command_ensure_sdk_ms,command_executor_total_ms,command_send_ms,command_recv_wait_ms,command_parse_ms,"
+           "command_executor_recv_wait_total_ms,command_executor_internal_total_ms,command_recovery_ms,command_executor_calls,command_recovery_count,"
+           "last_command,last_response,last_command_result,command_source,command_executor_last_error,command_executor_attempt_log,command_internal_attempt_log,"
            "telemetry_packets_total,telemetry_packets_valid,telemetry_packets_invalid,"
            "telemetry_timeouts,telemetry_errors,telemetry_hz_instant,telemetry_hz_ema,telemetry_age_ms,"
            "telemetry_interarrival_ms,telemetry_max_interarrival_ms,telemetry_last_gap_ms,telemetry_last_gap_sequence,"
@@ -433,6 +699,9 @@ std::string MetricsCollector::toCsvHeader() const {
            "video_interarrival_ms,video_max_interarrival_ms,video_last_gap_ms,video_last_gap_sequence,"
            "video_gap_events_300ms,video_gap_events_500ms,video_gap_events_1000ms,"
            "video_quality,video_quality_score,"
+           "link_quality,link_quality_score,link_safe_for_nonzero_rc,link_quality_reason,"
+           "link_telemetry_quality,link_video_quality,link_command_quality,link_rc_quality,"
+           "rc_packet_gap_ms,rc_expected_period_ms,rc_blackout_count,rc_last_nonzero_age_ms,rc_safety_override_active,"
            "nal_packets_in,nal_bytes_in,nal_units,nal_sps,nal_pps,nal_idr,nal_non_idr,nal_other,nal_decode_gated,nal_resyncs,nal_buffered_bytes,"
            "decoder_nals_in,decoder_packets_sent,decoder_frames_decoded,decoder_errors,decoder_fps_ema,"
            "frame_width,frame_height,keyframes,paused,overlay_enabled,"
@@ -470,12 +739,30 @@ std::string MetricsCollector::toCsvLine() const {
         << s.command_latency_ms_avg << ','
         << s.command_latency_ms_min << ','
         << s.command_latency_ms_max << ','
+        << s.last_command_latency_ms << ','
+        << s.last_command_elapsed_ms << ','
+        << s.last_command_age_ms << ','
+        << s.command_attempt_count << ','
+        << s.command_retry_count << ','
+        << s.command_timeout_count << ','
+        << s.command_client_total_ms << ','
+        << s.command_ensure_sdk_ms << ','
+        << s.command_executor_total_ms << ','
+        << s.command_send_ms << ','
+        << s.command_recv_wait_ms << ','
+        << s.command_parse_ms << ','
+        << s.command_executor_recv_wait_total_ms << ','
+        << s.command_executor_internal_total_ms << ','
+        << s.command_recovery_ms << ','
+        << s.command_executor_calls << ','
+        << s.command_recovery_count << ','
         << csvEscape(s.last_command) << ','
         << csvEscape(s.last_response) << ','
         << responseCodeToString(s.last_command_result) << ','
         << csvEscape(s.command_source) << ','
         << csvEscape(s.command_executor_last_error) << ','
         << csvEscape(s.command_executor_attempt_log) << ','
+        << csvEscape(s.command_internal_attempt_log) << ','
         << s.telemetry.packets_total << ','
         << s.telemetry.packets_valid << ','
         << s.telemetry.packets_invalid << ','
@@ -518,6 +805,19 @@ std::string MetricsCollector::toCsvLine() const {
         << s.video_rx.gap_events_1000ms << ','
         << csvEscape(s.video_quality) << ','
         << s.video_quality_score << ','
+        << csvEscape(s.link_quality.overall) << ','
+        << s.link_quality.score << ','
+        << (s.link_quality.safe_for_nonzero_rc ? 1 : 0) << ','
+        << csvEscape(s.link_quality.reason) << ','
+        << csvEscape(s.link_quality.telemetry) << ','
+        << csvEscape(s.link_quality.video) << ','
+        << csvEscape(s.link_quality.command) << ','
+        << csvEscape(s.link_quality.rc) << ','
+        << s.link_quality.rc_packet_gap_ms << ','
+        << s.link_quality.rc_expected_period_ms << ','
+        << s.link_quality.rc_blackout_count << ','
+        << s.link_quality.rc_last_nonzero_age_ms << ','
+        << (s.link_quality.rc_safety_override_active ? 1 : 0) << ','
         << s.nal.packets_in << ','
         << s.nal.bytes_in << ','
         << s.nal.nal_units_out << ','

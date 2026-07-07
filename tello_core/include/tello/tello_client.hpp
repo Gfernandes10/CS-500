@@ -33,6 +33,7 @@ public:
     struct ReliabilityConfig {
         int32_t command_max_attempts = 3;
         int32_t command_timeout_ms = 700;
+        int32_t critical_command_timeout_ms = 5000;
         int32_t command_retry_delay_ms = 100;
 
         int32_t recovery_threshold = 3;
@@ -65,6 +66,7 @@ public:
         NONE = 0,
         LOST = 1,
         RESTORED = 2,
+        TRANSIENT_LOSS_RECOVERED = 3,
     };
 
     /// Constructor
@@ -76,12 +78,13 @@ public:
     /// Initialize command channel and internal components.
     /// @param drone_ip Tello IP address (default: 192.168.10.1).
     /// @param drone_port Tello command port (default: 8889).
-    /// @param local_port Local UDP port for command socket binding if needed.
+    /// @param local_port Local UDP command port. The Tello SDK expects the host
+    /// to send and receive command-channel packets through UDP 8889.
     /// @return ResponseCode::OK on success, error otherwise.
     ResponseCode initialize(
         const std::string& drone_ip = "192.168.10.1",
         uint16_t drone_port = 8889,
-        uint16_t local_port = 9000
+        uint16_t local_port = 8889
     );
 
     /// Shutdown client and release resources.
@@ -153,6 +156,33 @@ public:
     /// Latest measured wait time before a command path obtained the command mutex.
     int64_t getLastCommandMutexWaitMs() const;
 
+    /// Latest total high-level command call duration, including mutex wait.
+    int64_t getLastCommandClientTotalMs() const;
+
+    /// Latest duration spent ensuring SDK mode before a command.
+    int64_t getLastEnsureSdkModeMs() const;
+
+    /// Latest duration spent inside the command executor for the final command.
+    int64_t getLastCommandExecutorMs() const;
+
+    /// Latest accumulated UDP receive wait across all executor calls in one command.
+    int64_t getLastCommandExecutorRecvWaitTotalMs() const;
+
+    /// Latest accumulated executor self-reported total time across all executor calls.
+    int64_t getLastCommandExecutorInternalTotalMs() const;
+
+    /// Latest duration spent inside command-session recovery during one command.
+    int64_t getLastCommandRecoveryMs() const;
+
+    /// Latest number of command executor calls made by one high-level command.
+    int64_t getLastCommandExecutorCalls() const;
+
+    /// Latest number of recovery calls made by one high-level command.
+    int64_t getLastCommandRecoveryCount() const;
+
+    /// Latest internal attempt/recovery log for one high-level command.
+    std::string getLastCommandInternalAttemptLog() const;
+
     /// State
     bool isInitialized() const;
     ConnectionState getConnectionState() const;
@@ -196,6 +226,16 @@ private:
 
     std::atomic<int32_t> foreground_command_requests_;
     std::atomic<int64_t> last_command_mutex_wait_ms_;
+    std::atomic<int64_t> last_command_client_total_ms_;
+    std::atomic<int64_t> last_ensure_sdk_mode_ms_;
+    std::atomic<int64_t> last_command_executor_ms_;
+    std::atomic<int64_t> last_command_executor_recv_wait_total_ms_;
+    std::atomic<int64_t> last_command_executor_internal_total_ms_;
+    std::atomic<int64_t> last_command_recovery_ms_;
+    std::atomic<int64_t> last_command_executor_calls_;
+    std::atomic<int64_t> last_command_recovery_count_;
+    std::atomic<int64_t> last_command_transient_failure_count_;
+    std::string last_command_internal_attempt_log_;
     std::atomic<bool> keepalive_running_;
     std::thread keepalive_thread_;
     mutable std::mutex keepalive_mutex_;
@@ -207,6 +247,7 @@ private:
     bool has_keepalive_last_tick_;
     std::chrono::steady_clock::time_point keepalive_last_success_tp_;
     std::chrono::steady_clock::time_point keepalive_last_tick_tp_;
+
 };
 
 } // namespace tello

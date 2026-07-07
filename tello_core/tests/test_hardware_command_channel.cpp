@@ -7,7 +7,7 @@ int main() {
     tello::TelloClient client;
 
     // Default Tello command endpoint and local command port.
-    const tello::ResponseCode init_rc = client.initialize("192.168.10.1", 8889, 9000);
+    const tello::ResponseCode init_rc = client.initialize("192.168.10.1", 8889, 8889);
     if (init_rc != tello::ResponseCode::OK) {
         std::cerr << "[test_hardware_command_channel] initialize failed: "
                   << static_cast<int>(init_rc) << std::endl;

@@ -62,6 +62,23 @@ public:
         double decode_fps_ema = 0.0;
     };
 
+    /// Aggregated link health intended for GUI display and future control gating.
+    struct LinkQualitySnapshot {
+        std::string overall = "NO_DATA";
+        int32_t score = 0;
+        bool safe_for_nonzero_rc = false;
+        std::string reason = "no fresh transport data";
+        std::string telemetry = "NO_DATA";
+        std::string video = "NO_DATA";
+        std::string command = "NO_DATA";
+        std::string rc = "NO_DATA";
+        int64_t rc_packet_gap_ms = -1;
+        int64_t rc_expected_period_ms = 50;
+        uint64_t rc_blackout_count = 0;
+        int64_t rc_last_nonzero_age_ms = -1;
+        bool rc_safety_override_active = false;
+    };
+
     /// Full-system snapshot of the latest known metrics values.
     struct Snapshot {
         ExperimentMetadata metadata;
@@ -75,12 +92,30 @@ public:
         double command_latency_ms_avg = 0.0;
         double command_latency_ms_min = 0.0;
         double command_latency_ms_max = 0.0;
+        double last_command_latency_ms = 0.0;
+        int64_t last_command_elapsed_ms = -1;
+        int64_t last_command_age_ms = -1;
+        uint64_t command_attempt_count = 0;
+        uint64_t command_retry_count = 0;
+        uint64_t command_timeout_count = 0;
+        int64_t command_client_total_ms = 0;
+        int64_t command_ensure_sdk_ms = 0;
+        int64_t command_executor_total_ms = 0;
+        int64_t command_send_ms = 0;
+        int64_t command_recv_wait_ms = 0;
+        int64_t command_parse_ms = 0;
+        int64_t command_executor_recv_wait_total_ms = 0;
+        int64_t command_executor_internal_total_ms = 0;
+        int64_t command_recovery_ms = 0;
+        int64_t command_executor_calls = 0;
+        int64_t command_recovery_count = 0;
         std::string last_command;
         std::string last_response;
         ResponseCode last_command_result = ResponseCode::ERROR;
         std::string command_source;
         std::string command_executor_last_error;
         std::string command_executor_attempt_log;
+        std::string command_internal_attempt_log;
 
         StateReceiver::TelemetryStats telemetry;
         std::string telemetry_quality = "NO_DATA";
@@ -97,6 +132,7 @@ public:
         std::string video_quality = "NO_DATA";
         int32_t video_quality_score = 0;
         uint64_t video_packet_delta = 0;
+        LinkQualitySnapshot link_quality;
         VideoAssemblyStats nal;
         uint64_t nal_sps = 0;
         uint64_t nal_pps = 0;
@@ -195,7 +231,23 @@ public:
     void updateCommandDiagnostics(
         const std::string& source,
         const std::string& executor_last_error,
-        const std::string& executor_attempt_log
+        const std::string& executor_attempt_log,
+        const std::string& internal_attempt_log = ""
+    );
+
+    /// Store timing breakdown for the latest command path.
+    void updateCommandTimingDiagnostics(
+        int64_t client_total_ms,
+        int64_t ensure_sdk_ms,
+        int64_t executor_total_ms,
+        int64_t send_ms,
+        int64_t recv_wait_ms,
+        int64_t parse_ms,
+        int64_t executor_recv_wait_total_ms,
+        int64_t executor_internal_total_ms,
+        int64_t recovery_ms,
+        int64_t executor_calls,
+        int64_t recovery_count
     );
 
     /// Store latest telemetry receiver statistics.
@@ -272,6 +324,15 @@ public:
         bool critical_command_active
     );
 
+    /// Store latest RC cadence diagnostics for aggregated link-safety decisions.
+    void updateRcLinkStats(
+        int64_t rc_packet_gap_ms,
+        int64_t rc_expected_period_ms,
+        uint64_t rc_blackout_count,
+        int64_t rc_last_nonzero_age_ms,
+        bool rc_safety_override_active
+    );
+
     /// Store background SDK keepalive diagnostics.
     void updateKeepaliveStats(
         uint64_t tick_total,
@@ -315,6 +376,9 @@ public:
     /// Get a thread-safe copy of current metrics.
     Snapshot getSnapshot() const;
 
+    /// Get only the current aggregated link-quality state.
+    LinkQualitySnapshot getLinkQualitySnapshot() const;
+
     /// Export a CSV header matching toCsvLine().
     std::string toCsvHeader() const;
 
@@ -322,6 +386,8 @@ public:
     std::string toCsvLine() const;
 
 private:
+    void recomputeLinkQualityLocked();
+
     mutable std::mutex mutex_;
     Snapshot snapshot_;
 };

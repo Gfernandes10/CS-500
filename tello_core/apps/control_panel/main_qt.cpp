@@ -350,30 +350,35 @@ public:
         setFocusPolicy(Qt::StrongFocus);
 
         auto* root = new QVBoxLayout(this);
+        metrics_started_at_ = std::chrono::steady_clock::now();
 
         status_label_ = new QLabel(this);
+        link_quality_label_ = new QLabel("link: NO_DATA", this);
         wifi_quality_label_ = new QLabel("wifi: unknown", this);
         battery_status_label_ = new QLabel("battery: --%", this);
         temperature_status_label_ = new QLabel("temp: --/-- C", this);
         top_state_record_dot_label_ = new QLabel(this);
         top_state_record_dot_label_->setFixedSize(12, 12);
         top_state_record_status_label_ = new QLabel("REC OFF", this);
+        recording_elapsed_label_ = new QLabel("rec: 0 s", this);
 
         auto* status_row = new QHBoxLayout();
         status_row->addWidget(status_label_, 1);
         status_row->addStretch(1);
+        status_row->addWidget(link_quality_label_);
         status_row->addWidget(wifi_quality_label_);
         status_row->addWidget(battery_status_label_);
         status_row->addWidget(temperature_status_label_);
         status_row->addWidget(top_state_record_dot_label_);
         status_row->addWidget(top_state_record_status_label_);
+        status_row->addWidget(recording_elapsed_label_);
         root->addLayout(status_row);
 
         auto* conn_row = new QHBoxLayout();
-        auto* connect_btn = new QPushButton("Connect + SDK", this);
-        auto* disconnect_btn = new QPushButton("Disconnect", this);
-        conn_row->addWidget(connect_btn);
-        conn_row->addWidget(disconnect_btn);
+        connect_btn_ = new QPushButton("Connect + SDK", this);
+        disconnect_btn_ = new QPushButton("Disconnect", this);
+        conn_row->addWidget(connect_btn_);
+        conn_row->addWidget(disconnect_btn_);
         conn_row->addStretch(1);
         root->addLayout(conn_row);
 
@@ -419,10 +424,18 @@ public:
         rc_stream_timer_ = new QTimer(this);
         state_view_timer_ = new QTimer(this);
         vision_view_timer_ = new QTimer(this);
+        recording_elapsed_timer_ = new QTimer(this);
+        recording_elapsed_timer_->setInterval(1000);
         startCommandWorker();
 
-        connect(connect_btn, &QPushButton::clicked, this, [this]() { (void)connectSdk(); });
-        connect(disconnect_btn, &QPushButton::clicked, this, [this]() { disconnectSdk(); });
+        connect(connect_btn_, &QPushButton::clicked, this, [this]() {
+            if (connect_in_progress_.load()) {
+                requestConnectCancel("button");
+                return;
+            }
+            (void)connectSdk();
+        });
+        connect(disconnect_btn_, &QPushButton::clicked, this, [this]() { disconnectSdk(); });
 
         connect(auto_refresh_timer_, &QTimer::timeout, this, [this]() {
             if (!sdk_ready_ || critical_command_active_) {
@@ -439,6 +452,10 @@ public:
 
         connect(vision_view_timer_, &QTimer::timeout, this, [this]() { refreshVisionView(); });
         vision_view_timer_->start(120);
+
+        connect(recording_elapsed_timer_, &QTimer::timeout, this, [this]() {
+            updateRecordingElapsedLabel();
+        });
 
         connect(panel_tabs_, &QTabWidget::currentChanged, this, [this](int idx) {
             appendLog(QString("panel switched to %1").arg(idx == 0 ? "Config" : "Operation"));
@@ -460,6 +477,7 @@ public:
     }
 
     ~ControlPanelWidget() override {
+        stopConnectWorker();
         performEmergencyShutdownIfConnected("panel destructor");
         qApp->removeEventFilter(this);
         stopKeyboardRcWorker("panel-shutdown");
@@ -536,12 +554,225 @@ private:
         int64_t elapsed_ms = 0;
         bool critical = false;
         bool was_auto_refresh_active = false;
+        bool telemetry_confirmed = false;
+        QString telemetry_confirmation_detail;
+    };
+
+    struct TelemetryActionConfirmation {
+        bool confirmed = false;
+        QString detail;
     };
 
     struct AsyncRecoveryResult {
         tello::TelloClient::VideoRecoveryStatus recovery;
         bool power_cycle_recovery_used = false;
     };
+
+    struct ConnectWorkerResult {
+        bool ok = false;
+        bool cancelled = false;
+        QString message;
+    };
+
+    void updateConnectButtons() {
+        const bool connecting = connect_in_progress_.load();
+        if (connect_btn_ != nullptr) {
+            connect_btn_->setText(connecting ? "Cancel Connect" : "Connect + SDK");
+        }
+        if (disconnect_btn_ != nullptr) {
+            disconnect_btn_->setEnabled(true);
+        }
+    }
+
+    void postConnectLog(const QString& message) {
+        QMetaObject::invokeMethod(this, [this, message]() {
+            appendLog(message);
+        }, Qt::QueuedConnection);
+    }
+
+    bool sleepConnectCancelable(int duration_ms) {
+        constexpr int kStepMs = 25;
+        int elapsed_ms = 0;
+        while (elapsed_ms < duration_ms) {
+            if (connect_cancel_requested_.load()) {
+                return false;
+            }
+            const int step = std::min(kStepMs, duration_ms - elapsed_ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(step));
+            elapsed_ms += step;
+        }
+        return !connect_cancel_requested_.load();
+    }
+
+    void requestConnectCancel(const QString& reason) {
+        if (!connect_in_progress_.load()) {
+            return;
+        }
+        connect_cancel_requested_.store(true);
+        appendLog("Connect + SDK cancel requested (" + reason + ")");
+        updateConnectButtons();
+    }
+
+    void stopConnectWorker() {
+        connect_cancel_requested_.store(true);
+        if (connect_worker_thread_.joinable()) {
+            connect_worker_thread_.join();
+        }
+        connect_in_progress_.store(false);
+        connect_cancel_requested_.store(false);
+    }
+
+    void finishConnectWorkerOnGui(const ConnectWorkerResult& result) {
+        if (connect_worker_thread_.joinable()) {
+            connect_worker_thread_.join();
+        }
+
+        connect_in_progress_.store(false);
+        connect_cancel_requested_.store(false);
+
+        if (result.ok) {
+            if (!state_receiver_.isRunning()) {
+                const auto state_rc = state_receiver_.start("0.0.0.0", 8890, 1000);
+                appendLog("state receiver start => " + QString::fromStdString(responseCodeToString(state_rc)));
+                if (state_buffer_capacity_spin_ != nullptr) {
+                    state_receiver_.setStateBufferCapacity(
+                        static_cast<size_t>(state_buffer_capacity_spin_->value()));
+                }
+            }
+            sdk_ready_ = true;
+            emergency_shutdown_sent_ = false;
+            const auto keepalive_rc = client_.startSdkKeepalive(5000);
+            appendLog("sdk keepalive start => " + QString::fromStdString(responseCodeToString(keepalive_rc)));
+            appendLog(result.message.isEmpty() ? "Connect + SDK complete" : result.message);
+            startDefaultVisionIfReady("connect");
+        } else {
+            sdk_ready_ = false;
+            client_.shutdown();
+            appendLog(result.message.isEmpty()
+                          ? "Connect + SDK failed"
+                          : result.message);
+        }
+
+        updateConnectButtons();
+        updateStatusLabel();
+    }
+
+    void startConnectWorker() {
+        if (connect_in_progress_.exchange(true)) {
+            requestConnectCancel("already running");
+            return;
+        }
+
+        connect_cancel_requested_.store(false);
+        sdk_ready_ = false;
+        updateConnectButtons();
+        updateStatusLabel();
+        appendLog("Connect + SDK started");
+
+        connect_worker_thread_ = std::thread([this]() {
+            ConnectWorkerResult result;
+            const tello::TelloClient::ReliabilityConfig normal_config = client_.getReliabilityConfig();
+            tello::TelloClient::ReliabilityConfig connect_config = normal_config;
+            connect_config.command_max_attempts = 1;
+            connect_config.command_timeout_ms = 800;
+            connect_config.command_retry_delay_ms = 0;
+            client_.setReliabilityConfig(connect_config);
+
+            auto finish = [&](ConnectWorkerResult finished) {
+                client_.setReliabilityConfig(normal_config);
+                if (!finished.ok) {
+                    client_.shutdown();
+                }
+                QMetaObject::invokeMethod(this, [this, finished]() {
+                    finishConnectWorkerOnGui(finished);
+                }, Qt::QueuedConnection);
+            };
+
+            constexpr int kConnectAttempts = 6;
+            constexpr int kSdkProbesPerAttempt = 3;
+            constexpr int kRebindPauseMs = 350;
+            constexpr int kSdkProbeGapMs = 500;
+            constexpr int kPostInitSettleMs = 900;
+
+            for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
+                if (connect_cancel_requested_.load()) {
+                    result.cancelled = true;
+                    result.message = "Connect + SDK cancelled";
+                    finish(result);
+                    return;
+                }
+
+                client_.shutdown();
+                if (!sleepConnectCancelable(kRebindPauseMs)) {
+                    result.cancelled = true;
+                    result.message = "Connect + SDK cancelled";
+                    finish(result);
+                    return;
+                }
+
+                const auto init_rc = client_.initialize("192.168.10.1", 8889, 8889);
+                postConnectLog("initialize(attempt=" + QString::number(attempt) + "): "
+                               + QString::fromStdString(responseCodeToString(init_rc)));
+                if (init_rc != tello::ResponseCode::OK) {
+                    const int backoff_ms = 600 + attempt * 400;
+                    if (!sleepConnectCancelable(backoff_ms)) {
+                        result.cancelled = true;
+                        result.message = "Connect + SDK cancelled";
+                        finish(result);
+                        return;
+                    }
+                    continue;
+                }
+
+                if (!sleepConnectCancelable(kPostInitSettleMs)) {
+                    result.cancelled = true;
+                    result.message = "Connect + SDK cancelled";
+                    finish(result);
+                    return;
+                }
+
+                for (int probe = 1; probe <= kSdkProbesPerAttempt; ++probe) {
+                    if (connect_cancel_requested_.load()) {
+                        result.cancelled = true;
+                        result.message = "Connect + SDK cancelled";
+                        finish(result);
+                        return;
+                    }
+
+                    const auto sdk_rc = client_.enterSdkMode();
+                    postConnectLog("command (enterSdkMode, attempt=" + QString::number(attempt)
+                                   + ", probe=" + QString::number(probe) + "): "
+                                   + QString::fromStdString(responseCodeToString(sdk_rc)));
+                    if (sdk_rc == tello::ResponseCode::OK) {
+                        result.ok = true;
+                        result.message = "Connect + SDK complete";
+                        finish(result);
+                        return;
+                    }
+
+                    if (probe < kSdkProbesPerAttempt
+                        && !sleepConnectCancelable(kSdkProbeGapMs)) {
+                        result.cancelled = true;
+                        result.message = "Connect + SDK cancelled";
+                        finish(result);
+                        return;
+                    }
+                }
+
+                const int backoff_ms = 1000 + attempt * 500;
+                if (!sleepConnectCancelable(backoff_ms)) {
+                    result.cancelled = true;
+                    result.message = "Connect + SDK cancelled";
+                    finish(result);
+                    return;
+                }
+            }
+
+            result.ok = false;
+            result.message = "Connect + SDK failed after retries. If the drone was just powered on, wait 10-15s and try again.";
+            finish(result);
+        });
+    }
 
     void startCommandWorker() {
         std::lock_guard<std::mutex> lock(command_worker_mutex_);
@@ -1162,6 +1393,24 @@ private:
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
+    void recordRcLinkSend(const RcChannels& rc) {
+        const int64_t now_ms = steadyNowMs();
+        const int64_t previous_ms = last_rc_send_steady_ms_.exchange(now_ms);
+        if (previous_ms > 0) {
+            const int64_t gap_ms = now_ms - previous_ms;
+            rc_packet_gap_ms_.store(gap_ms);
+            if (gap_ms > 1000) {
+                rc_blackout_count_.fetch_add(1);
+            }
+        } else {
+            rc_packet_gap_ms_.store(-1);
+        }
+
+        if (rc.a != 0 || rc.b != 0 || rc.c != 0 || rc.d != 0) {
+            last_nonzero_rc_steady_ms_.store(now_ms);
+        }
+    }
+
     void publishKeyboardRcDesired(const RcChannels& rc) {
         keyboard_rc_desired_a_.store(rc.a);
         keyboard_rc_desired_b_.store(rc.b);
@@ -1198,9 +1447,7 @@ private:
         keyboard_rc_worker_running_.store(false);
 
         if (sdk_ready_) {
-            const auto rc = client_.sendCommandNoWait("rc 0 0 0 0");
-            state_receiver_.recordRcCommandSample(0, 0, 0, 0, source, rc);
-            last_sent_rc_channels_ = RcChannels{0, 0, 0, 0};
+            (void)sendRcCommandNoWait("rc 0 0 0 0", source);
         }
     }
 
@@ -1223,14 +1470,7 @@ private:
             }
 
             const std::string cmd = buildRcCommand(rc);
-            const auto send_rc = client_.sendCommandNoWait(cmd);
-            state_receiver_.recordRcCommandSample(
-                rc.a,
-                rc.b,
-                rc.c,
-                rc.d,
-                "keyboard-worker",
-                send_rc);
+            (void)sendRcCommandNoWait(cmd, "keyboard-worker");
 
             std::this_thread::sleep_for(std::chrono::milliseconds(kRcWorkerIntervalMs));
         }
@@ -1625,6 +1865,8 @@ private:
 
         last_state_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - tick_started_at).count();
+        updateRuntimeMetricsContext();
+        updateTopLinkQualityLabel();
     }
 
     void publishVisionRgbFrame(
@@ -1971,6 +2213,18 @@ private:
         return true;
     }
 
+    void startDefaultVisionIfReady(const QString& reason) {
+        if (!sdk_ready_ || vision_pipeline_running_) {
+            return;
+        }
+        appendLog("default camera auto-start (" + reason + ")");
+        QTimer::singleShot(250, this, [this]() {
+            if (sdk_ready_ && !vision_pipeline_running_) {
+                (void)startVisionWithStreamOn();
+            }
+        });
+    }
+
     void stopVisionWithStreamOff() {
         stopVisionPipeline();
 
@@ -2163,22 +2417,44 @@ private:
             return tello::ResponseCode::ERROR;
         }
 
-        if (ros_mode_) {
-            const bool ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
-            return ok ? tello::ResponseCode::OK : tello::ResponseCode::ERROR;
-        }
-
-        const auto rc = client_.sendCommandNoWait(cmd);
         int a = 0;
         int b = 0;
         int c = 0;
         int d = 0;
-        if (parseRcCommand(cmd, a, b, c, d)) {
-            state_receiver_.recordRcCommandSample(a, b, c, d, source, rc);
-            last_sent_rc_channels_ = RcChannels{a, b, c, d};
+        const bool parsed_rc = parseRcCommand(cmd, a, b, c, d);
+
+        if (ros_mode_) {
+            const bool ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
+            if (parsed_rc) {
+                const auto rc = ok ? tello::ResponseCode::OK : tello::ResponseCode::ERROR;
+                state_receiver_.recordRcCommandSample(a, b, c, d, source, rc);
+                last_sent_rc_channels_ = RcChannels{a, b, c, d};
+                recordRcLinkSend(last_sent_rc_channels_);
+            }
+            return ok ? tello::ResponseCode::OK : tello::ResponseCode::ERROR;
         }
+
+        if (!parsed_rc) {
+            const auto rc = client_.sendCommandNoWait(cmd);
+            if (rc != tello::ResponseCode::OK) {
+                QMetaObject::invokeMethod(this, [this, source, rc]() {
+                    appendLog(QString::fromStdString(source) + " => "
+                              + QString::fromStdString(responseCodeToString(rc)));
+                }, Qt::QueuedConnection);
+            }
+            return rc;
+        }
+
+        const auto rc = client_.sendCommandNoWait(cmd);
+        state_receiver_.recordRcCommandSample(a, b, c, d, source, rc);
+        last_sent_rc_channels_ = RcChannels{a, b, c, d};
+        recordRcLinkSend(last_sent_rc_channels_);
         if (rc != tello::ResponseCode::OK) {
-            appendLog(QString::fromStdString(source) + " => " + QString::fromStdString(responseCodeToString(rc)));
+            const QString source_q = QString::fromStdString(source);
+            const QString rc_q = QString::fromStdString(responseCodeToString(rc));
+            QMetaObject::invokeMethod(this, [this, source_q, rc_q]() {
+                appendLog(source_q + " => " + rc_q);
+            }, Qt::QueuedConnection);
         }
         return rc;
     }
@@ -2197,9 +2473,9 @@ private:
 
         const QString rc_q = QString::fromStdString(responseCodeToString(result.rc));
         if (result.rc == tello::ResponseCode::OK) {
-            appendLog("rc stream neutralized no-wait (" + reason + ") => " + rc_q);
+            appendLog("rc stream neutralized (" + reason + ") => " + rc_q);
         } else {
-            appendLog("rc stream neutralize no-wait failed (" + reason + ") => " + rc_q);
+            appendLog("rc stream neutralize failed (" + reason + ") => " + rc_q);
         }
 
         if (write_metrics_row) {
@@ -2261,13 +2537,39 @@ private:
         (void)sendRcCommandNoWait(cmd, "rc-stream");
     }
 
+    void updateTopLinkQualityLabel() {
+        if (link_quality_label_ == nullptr) {
+            return;
+        }
+
+        const auto link = metrics_.getLinkQualitySnapshot();
+        const QString label = QString::fromStdString(link.overall);
+        const QString safe = link.safe_for_nonzero_rc ? "RC SAFE" : "RC HOLD";
+        link_quality_label_->setText(
+            QString("link: %1 (%2) | %3").arg(label).arg(link.score).arg(safe));
+        link_quality_label_->setToolTip(QString::fromStdString(link.reason));
+
+        QString color = "#8E8E93";
+        if (link.overall == "OK") {
+            color = "#2ECC71";
+        } else if (link.overall == "DEGRADED") {
+            color = "#D6A21A";
+        } else if (link.overall == "STALE" || link.overall == "BLACKOUT") {
+            color = "#EE5858";
+        }
+        link_quality_label_->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; }").arg(color));
+    }
+
     void updateStatusLabel() {
+        updateRuntimeMetricsContext();
         status_label_->setText(
             "State: " + QString::fromStdString(connectionStateToString(client_.getConnectionState()))
             + " | SDK: " + QString(sdk_ready_ ? "READY" : "NOT_READY")
+            + " | CONNECTING=" + QString(connect_in_progress_.load() ? "YES" : "NO")
             + " | RC_STREAM=" + QString((rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) ? "ON" : "OFF")
             + " | KEYBOARD=" + QString(keyboard_control_active_ ? "ON" : "OFF")
             + " | speed_setpoint=" + QString::number(speed_spin_ != nullptr ? speed_spin_->value() : 0));
+        updateTopLinkQualityLabel();
     }
 
     void waitWithUiEvents(int duration_ms) {
@@ -2284,70 +2586,26 @@ private:
             const bool ok = callRosTriggerService("/tello/connect", "connect");
             sdk_ready_ = ok;
             updateStatusLabel();
+            if (ok) {
+                startDefaultVisionIfReady("ros-connect");
+            }
             return ok;
         }
 
-        // Recovery-friendly connect flow: always refresh command channel state.
-        // This is important after drone power-cycle while the app stays open.
-        constexpr int kConnectAttempts = 6;
-        constexpr int kSdkProbesPerAttempt = 3;
-        constexpr int kRebindPauseMs = 350;
-        constexpr int kSdkProbeGapMs = 500;
-        constexpr int kPostInitSettleMs = 900;
-
-        for (int attempt = 1; attempt <= kConnectAttempts; ++attempt) {
-            client_.shutdown();
-            waitWithUiEvents(kRebindPauseMs);
-
-            const auto init_rc = client_.initialize("192.168.10.1", 8889, 9000);
-            appendLog("initialize(attempt=" + QString::number(attempt) + "): "
-                      + QString::fromStdString(responseCodeToString(init_rc)));
-            if (init_rc != tello::ResponseCode::OK) {
-                const int backoff_ms = 600 + attempt * 400;
-                waitWithUiEvents(backoff_ms);
-                continue;
-            }
-
-            // After power-cycle, the drone can accept Wi-Fi but still be finishing SDK stack startup.
-            waitWithUiEvents(kPostInitSettleMs);
-
-            for (int probe = 1; probe <= kSdkProbesPerAttempt; ++probe) {
-                const auto sdk_rc = client_.enterSdkMode();
-                appendLog("command (enterSdkMode, attempt=" + QString::number(attempt)
-                          + ", probe=" + QString::number(probe) + "): "
-                          + QString::fromStdString(responseCodeToString(sdk_rc)));
-                if (sdk_rc == tello::ResponseCode::OK) {
-                    if (!state_receiver_.isRunning()) {
-                        const auto state_rc = state_receiver_.start("0.0.0.0", 8890, 1000);
-                        appendLog("state receiver start => " + QString::fromStdString(responseCodeToString(state_rc)));
-                        state_receiver_.setStateBufferCapacity(static_cast<size_t>(state_buffer_capacity_spin_->value()));
-                    }
-                    sdk_ready_ = true;
-                    emergency_shutdown_sent_ = false;
-                    const auto keepalive_rc = client_.startSdkKeepalive(5000);
-                    appendLog("sdk keepalive start => " + QString::fromStdString(responseCodeToString(keepalive_rc)));
-                    updateStatusLabel();
-                    return true;
-                }
-
-                if (probe < kSdkProbesPerAttempt) {
-                    waitWithUiEvents(kSdkProbeGapMs);
-                }
-            }
-
-            const int backoff_ms = 1000 + attempt * 500;
-            waitWithUiEvents(backoff_ms);
-        }
-
-        sdk_ready_ = false;
-        appendLog("Connect + SDK failed after retries. If the drone was just powered on, wait 10-15s and try again.");
-        updateStatusLabel();
+        startConnectWorker();
         return false;
     }
 
     void disconnectSdk() {
         if (ros_mode_) {
             (void)callRosTriggerService("/tello/disconnect", "disconnect");
+            sdk_ready_ = false;
+            updateStatusLabel();
+            return;
+        }
+
+        if (connect_in_progress_.load()) {
+            requestConnectCancel("disconnect");
             sdk_ready_ = false;
             updateStatusLabel();
             return;
@@ -2387,6 +2645,9 @@ private:
 
     void ensureSdkKeepaliveRunning(const QString& reason) {
         if (client_.isSdkKeepaliveRunning() || !client_.isInitialized()) {
+            return;
+        }
+        if (connect_in_progress_.load()) {
             return;
         }
         if (keyboard_control_active_ || (rc_stream_timer_ != nullptr && rc_stream_timer_->isActive())) {
@@ -2471,6 +2732,12 @@ private:
     void startLoggingRecording() {
         const bool gui_ok = openCsv();
         state_receiver_.startStateRecording();
+        recording_started_at_ = std::chrono::steady_clock::now();
+        recording_elapsed_s_ = 0;
+        if (recording_elapsed_timer_ != nullptr) {
+            recording_elapsed_timer_->start();
+        }
+        updateRecordingElapsedLabel();
         updateStateRecordingStatusIndicators();
         appendLog(QString("recording started | gui_csv=%1 | state_recording=ON")
                       .arg(gui_ok ? "ON" : "FAILED"));
@@ -2480,21 +2747,36 @@ private:
     void stopLoggingRecording() {
         appendLog("recording stopped");
         writeEventMetricsRow("logging:stop");
+        recording_elapsed_s_ = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - recording_started_at_).count();
         closeCsv();
         state_receiver_.stopStateRecording();
+        if (recording_elapsed_timer_ != nullptr) {
+            recording_elapsed_timer_->stop();
+        }
+        updateRecordingElapsedLabel();
         updateStateRecordingStatusIndicators();
     }
 
     void clearLoggingRecording() {
         const bool was_gui_recording = isGuiCsvRecording();
         state_receiver_.clearRecordedStateSamples();
+        recording_started_at_ = std::chrono::steady_clock::now();
+        recording_elapsed_s_ = 0;
         updateStateRecordingStatusIndicators();
         if (was_gui_recording) {
             (void)openCsv();
+            if (recording_elapsed_timer_ != nullptr) {
+                recording_elapsed_timer_->start();
+            }
         } else {
             metrics_.reset();
             metrics_attempt_ = 0;
+            if (recording_elapsed_timer_ != nullptr) {
+                recording_elapsed_timer_->stop();
+            }
         }
+        updateRecordingElapsedLabel();
         appendLog("recording cleared");
         writeEventMetricsRow("logging:clear");
     }
@@ -2566,7 +2848,25 @@ private:
         }
     }
 
+    void updateRecordingElapsedLabel() {
+        if (recording_elapsed_label_ == nullptr) {
+            return;
+        }
+
+        int64_t elapsed_s = 0;
+        if (isGuiCsvRecording() || state_receiver_.isStateRecording()) {
+            recording_elapsed_s_ = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - recording_started_at_).count();
+        }
+        elapsed_s = recording_elapsed_s_;
+        recording_elapsed_label_->setText(QString("rec: %1 s").arg(elapsed_s));
+    }
+
     void updateRuntimeMetricsContext() {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metrics_started_at_).count();
+        metrics_.setElapsedMs(elapsed_ms);
+
         int a = 0;
         int b = 0;
         int c = 0;
@@ -2599,6 +2899,17 @@ private:
         } else {
             metrics_.updateTelemetryState(tello::TelloState{}, false);
         }
+        if (vision_pipeline_running_) {
+            const auto stream_stats = video_stream_reader_.getStats();
+            tello::MetricsCollector::VideoTransportStats rx_stats{};
+            rx_stats.packets_total = stream_stats.packets_read;
+            rx_stats.bytes_total = stream_stats.bytes_read;
+            rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
+            rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
+            metrics_.updateVideoTransportStats(rx_stats);
+        } else {
+            metrics_.updateVideoTransportStats(tello::MetricsCollector::VideoTransportStats{});
+        }
         metrics_.updatePanelDiagnostics(
             state_metric_combo_ != nullptr ? state_metric_combo_->currentText().toStdString() : "",
             state_sequence_delta,
@@ -2612,6 +2923,19 @@ private:
             client_.isSdkKeepaliveRunning(),
             auto_refresh_timer_ != nullptr && auto_refresh_timer_->isActive(),
             critical_command_active_);
+        const int64_t now_ms = steadyNowMs();
+        const int64_t last_nonzero_ms = last_nonzero_rc_steady_ms_.load();
+        const int64_t last_nonzero_age_ms = last_nonzero_ms > 0 ? now_ms - last_nonzero_ms : -1;
+        const int64_t rc_expected_period_ms =
+            keyboard_control_active_
+                ? 50
+                : (rc_stream_interval_ms_ != nullptr ? rc_stream_interval_ms_->value() : 50);
+        metrics_.updateRcLinkStats(
+            rc_packet_gap_ms_.load(),
+            rc_expected_period_ms,
+            rc_blackout_count_.load(),
+            last_nonzero_age_ms,
+            false);
         const auto keepalive_stats = client_.getSdkKeepaliveStats();
         metrics_.updateKeepaliveStats(
             keepalive_stats.tick_total,
@@ -2707,7 +3031,26 @@ private:
         const auto executor = client_.getCommandExecutor();
         const std::string executor_error = executor != nullptr ? executor->getLastError() : "";
         const std::string executor_attempt_log = executor != nullptr ? executor->getLastAttemptLog() : "";
-        metrics_.updateCommandDiagnostics(source.toStdString(), executor_error, executor_attempt_log);
+        metrics_.updateCommandDiagnostics(
+            source.toStdString(),
+            executor_error,
+            executor_attempt_log,
+            client_.getLastCommandInternalAttemptLog());
+        if (executor != nullptr) {
+            const auto timing = executor->getLastTimingStats();
+            metrics_.updateCommandTimingDiagnostics(
+                client_.getLastCommandClientTotalMs(),
+                client_.getLastEnsureSdkModeMs(),
+                client_.getLastCommandExecutorMs(),
+                timing.send_ms,
+                timing.recv_wait_ms,
+                timing.parse_ms,
+                client_.getLastCommandExecutorRecvWaitTotalMs(),
+                client_.getLastCommandExecutorInternalTotalMs(),
+                client_.getLastCommandRecoveryMs(),
+                client_.getLastCommandExecutorCalls(),
+                client_.getLastCommandRecoveryCount());
+        }
         metrics_.setConnectionState(state.toStdString());
         metrics_.setEvent((QString("command:") + source).toStdString());
         metrics_.updateLogMessage("", "");
@@ -2781,6 +3124,67 @@ private:
         return isCriticalFlightCommand(cmd) || cmd == "streamon" || cmd == "streamoff";
     }
 
+    TelemetryActionConfirmation waitForTelemetryActionConfirmation(
+        const std::string& cmd,
+        bool has_before,
+        const tello::TelloState& before
+    ) {
+        TelemetryActionConfirmation confirmation;
+        if (cmd != "takeoff" && cmd != "land") {
+            return confirmation;
+        }
+
+        constexpr int kMaxWaitMs = 3000;
+        constexpr int kPollMs = 100;
+        const auto started_at = std::chrono::steady_clock::now();
+
+        while (true) {
+            if (state_receiver_.hasReceivedState()) {
+                const tello::TelloState latest = state_receiver_.getLatestState();
+                const int dh = latest.h - before.h;
+                const int dtof = latest.tof - before.tof;
+                bool confirmed = false;
+
+                if (cmd == "takeoff") {
+                    confirmed =
+                        latest.h >= 20
+                        || latest.tof >= 25
+                        || (has_before && (dh >= 15 || dtof >= 15));
+                } else if (cmd == "land") {
+                    confirmed =
+                        latest.h <= 10
+                        || latest.tof <= 25
+                        || (has_before && (dh <= -15 || dtof <= -15));
+                }
+
+                if (confirmed) {
+                    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started_at).count();
+                    confirmation.confirmed = true;
+                    confirmation.detail = QString(
+                        "telemetry_confirmed(%1 before_h=%2 before_tof=%3 after_h=%4 after_tof=%5 wait_ms=%6)")
+                        .arg(QString::fromStdString(cmd))
+                        .arg(has_before ? before.h : -1)
+                        .arg(has_before ? before.tof : -1)
+                        .arg(latest.h)
+                        .arg(latest.tof)
+                        .arg(elapsed_ms);
+                    return confirmation;
+                }
+            }
+
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started_at).count();
+            if (elapsed_ms >= kMaxWaitMs) {
+                confirmation.detail = QString("telemetry_unconfirmed(%1 wait_ms=%2)")
+                    .arg(QString::fromStdString(cmd))
+                    .arg(elapsed_ms);
+                return confirmation;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
+        }
+    }
+
     void enqueueBlockingCommand(const std::string& cmd,
                                 const QString& source,
                                 bool critical,
@@ -2793,6 +3197,11 @@ private:
             result.critical = critical;
             result.was_auto_refresh_active = was_auto_refresh_active;
 
+            const bool has_before_state = state_receiver_.hasReceivedState();
+            const tello::TelloState before_state = has_before_state
+                ? state_receiver_.getLatestState()
+                : tello::TelloState{};
+
             std::string response;
             const auto command_started_at = std::chrono::steady_clock::now();
             result.rc = client_.sendCommandWithResponse(cmd, response);
@@ -2800,6 +3209,12 @@ private:
                 std::chrono::steady_clock::now() - command_started_at).count();
             result.response = QString::fromStdString(response);
             result.state = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
+            if (critical && result.rc != tello::ResponseCode::OK) {
+                const TelemetryActionConfirmation confirmation =
+                    waitForTelemetryActionConfirmation(cmd, has_before_state, before_state);
+                result.telemetry_confirmed = confirmation.confirmed;
+                result.telemetry_confirmation_detail = confirmation.detail;
+            }
 
             QMetaObject::invokeMethod(this, [this, result]() {
                 handleAsyncCommandResult(result);
@@ -2817,8 +3232,17 @@ private:
         if (!result.response.isEmpty()) {
             line += " | response=\"" + result.response + "\"";
         }
+        if (result.telemetry_confirmed) {
+            line += " | " + result.telemetry_confirmation_detail;
+        }
         line += " | state=" + result.state;
         appendLog(line);
+
+        if (result.critical
+            && result.rc != tello::ResponseCode::OK
+            && !result.telemetry_confirmation_detail.isEmpty()) {
+            appendLog(result.telemetry_confirmation_detail);
+        }
 
         if (result.critical && result.rc == tello::ResponseCode::ERROR) {
             appendLog(QString::fromStdString(result.command)
@@ -2826,12 +3250,19 @@ private:
                         "the next safety command is not blocked by this result.");
         }
 
+        QString response_for_metrics = result.response;
+        if (result.telemetry_confirmed) {
+            response_for_metrics = response_for_metrics.isEmpty()
+                ? result.telemetry_confirmation_detail
+                : response_for_metrics + "|" + result.telemetry_confirmation_detail;
+        }
+
         writeCommandMetricsRow(
             result.source,
             QString::fromStdString(result.command),
             static_cast<double>(result.elapsed_ms),
             result.rc,
-            result.response,
+            response_for_metrics,
             result.state);
 
         if (result.critical) {
@@ -2945,9 +3376,13 @@ private:
         int parsed_rc_c = 0;
         int parsed_rc_d = 0;
         const bool is_rc_command = parseRcCommand(cmd, parsed_rc_a, parsed_rc_b, parsed_rc_c, parsed_rc_d);
-        const auto rc = is_rc_command
-            ? client_.sendCommandNoWait(cmd)
-            : client_.sendCommandWithResponse(cmd, response);
+        tello::ResponseCode rc = tello::ResponseCode::ERROR;
+        if (is_rc_command) {
+            rc = client_.sendCommandNoWait(cmd);
+            response = "no_wait";
+        } else {
+            rc = client_.sendCommandWithResponse(cmd, response);
+        }
         const auto command_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - command_started_at).count();
         if (critical) {
@@ -2955,7 +3390,6 @@ private:
         }
 
         if (is_rc_command) {
-            response = "no_wait";
             state_receiver_.recordRcCommandSample(
                 parsed_rc_a,
                 parsed_rc_b,
@@ -2963,6 +3397,8 @@ private:
                 parsed_rc_d,
                 source.toStdString(),
                 rc);
+            last_sent_rc_channels_ = RcChannels{parsed_rc_a, parsed_rc_b, parsed_rc_c, parsed_rc_d};
+            recordRcLinkSend(last_sent_rc_channels_);
         }
 
         const QString rc_q = QString::fromStdString(responseCodeToString(rc));
@@ -3049,19 +3485,27 @@ private:
     bool sdk_ready_ = false;
     bool emergency_shutdown_sent_ = false;
     bool ros_mode_ = false;
+    std::atomic<bool> connect_in_progress_{false};
+    std::atomic<bool> connect_cancel_requested_{false};
+    std::thread connect_worker_thread_;
 
     QLabel* status_label_ = nullptr;
+    QLabel* link_quality_label_ = nullptr;
     QLabel* wifi_quality_label_ = nullptr;
     QLabel* battery_status_label_ = nullptr;
     QLabel* temperature_status_label_ = nullptr;
     QLabel* top_state_record_dot_label_ = nullptr;
     QLabel* top_state_record_status_label_ = nullptr;
+    QLabel* recording_elapsed_label_ = nullptr;
     QTextEdit* log_view_ = nullptr;
+    QPushButton* connect_btn_ = nullptr;
+    QPushButton* disconnect_btn_ = nullptr;
 
     QTimer* auto_refresh_timer_ = nullptr;
     QCheckBox* rc_stream_check_ = nullptr;
     QSpinBox* rc_stream_interval_ms_ = nullptr;
     QTimer* rc_stream_timer_ = nullptr;
+    QTimer* recording_elapsed_timer_ = nullptr;
     QCheckBox* keyboard_control_check_ = nullptr;
     QLabel* keyboard_control_profile_label_ = nullptr;
     QLabel* keyboard_control_vector_label_ = nullptr;
@@ -3087,6 +3531,10 @@ private:
     std::atomic<int> keyboard_rc_desired_d_{0};
     std::atomic<int64_t> keyboard_rc_last_update_ms_{0};
     RcChannels last_sent_rc_channels_;
+    std::atomic<int64_t> last_rc_send_steady_ms_{0};
+    std::atomic<int64_t> rc_packet_gap_ms_{-1};
+    std::atomic<uint64_t> rc_blackout_count_{0};
+    std::atomic<int64_t> last_nonzero_rc_steady_ms_{0};
     std::thread command_worker_thread_;
     std::mutex command_worker_mutex_;
     std::condition_variable command_worker_cv_;
@@ -3162,6 +3610,8 @@ private:
     std::vector<std::string> gui_metrics_rows_;
     tello::MetricsCollector metrics_;
     std::chrono::steady_clock::time_point metrics_started_at_;
+    std::chrono::steady_clock::time_point recording_started_at_ = std::chrono::steady_clock::now();
+    int64_t recording_elapsed_s_ = 0;
     uint64_t metrics_attempt_ = 0;
     std::chrono::steady_clock::time_point last_vision_metrics_csv_tp_;
     uint64_t last_vision_metrics_packets_ = 0;
