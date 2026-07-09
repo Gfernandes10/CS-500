@@ -13,9 +13,9 @@ At this stage, the goal is not to test every feature in isolation. The goal is t
 5. Does keyboard RC control return to neutral safely and keep a reasonable send cadence?
 6. Does the recovery path handle realistic reconnect or power-cycle scenarios?
 
-## What Changed From The Earlier Experiment Matrix
+## Final Experiment Selection
 
-The previous matrix was useful during development, but several experiments now overlap. The final set below removes or merges runs that no longer add much evidence.
+The final set below focuses on the evidence needed for the project report: command reliability, telemetry freshness, FFmpeg video behavior, GUI responsiveness, keyboard RC safety, and recovery behavior.
 
 ### Kept
 
@@ -41,8 +41,7 @@ The previous matrix was useful during development, but several experiments now o
 | `E-LINK-DIST` | removed from final run set | Distance is not a core final claim because the drone will normally operate near the operator/computer. |
 | `E-RC-QUALITY` | merged into `E7-KBD-RESPONSE` | Keyboard control is the most relevant RC path for the final implementation. RC cadence is recorded in the state CSV. |
 | `E-KBD-NEUTRAL` | merged into `E7-KBD-RESPONSE` | Neutral return is tested before and during the keyboard response flight test. |
-| `E9-WIFI-LOSS` | optional recovery diagnostic | Keep only if you specifically want command-only Wi-Fi reconnect evidence. |
-| `E10-VID-RESET` | optional recovery diagnostic | Keep only if you can interrupt video without power-cycling the drone. A drone restart belongs to `E8-PWR-CYCLE`. |
+| `E9-WIFI-LOSS` | included recovery diagnostic | Captures command-only Wi-Fi reconnect behavior. |
 
 ## Safety Rules
 
@@ -135,6 +134,14 @@ Labels:
 2. `OK`: latest data is fresh.
 3. `DEGRADED`: data is delayed but still present.
 4. `STALE`: data is too old for safe control assumptions.
+5. `BLACKOUT`: aggregate link-quality state used when a longer active-control communication blackout is detected.
+
+Quality is a freshness and continuity indicator, not a subjective image-quality score:
+
+1. `OK`: latest packet/frame age is `<= 200 ms` and interarrival is `<= 300 ms`.
+2. `DEGRADED`: latest packet/frame age is `<= 500 ms` and interarrival is `<= 500 ms`.
+3. `STALE`: data is older than the `DEGRADED` thresholds.
+4. `NO_DATA`: no packet/frame has been received yet.
 
 For a future closed-loop controller, treat `OK` as normal, `DEGRADED` as cautious/limited-control, and `STALE`/`NO_DATA` as unsafe for feedback control.
 
@@ -143,15 +150,14 @@ For a future closed-loop controller, treat `OK` as normal, `DEGRADED` as cautiou
 | ID | Purpose | Tool | Duration | Required |
 |---|---|---|---:|---|
 | `E1-SMOKE-CMD` | Confirm basic SDK connectivity before the run set. | `tello_cli --once` | one command | Yes |
-| `E2-CMD-BASE` | Measure command latency and reliability. | `tello_cli --watch` | 60 s | Yes |
+| `E2-CMD-BASE` | Measure command latency and reliability. | `tello_cli --watch` | 120 s | Yes |
 | `E3-STATE-CLI` | Measure telemetry without GUI/video load. | `tello_cli --state-watch` | 180 s | Yes |
 | `E4-VIDEO-CLI` | Measure video without Qt rendering. | `tello_cli --video-watch` | 120-180 s | Yes |
 | `E5-GUI-VID-IDLE` | Measure Control Panel with FFmpeg video enabled and drone stationary. | `tello_control_panel` | 2-3 min | Yes |
 | `E6-KBD-PROFILE` | Validate keyboard profile persistence and mappings. | `tello_control_panel` | manual | Yes |
 | `E7-KBD-RESPONSE` | Validate keyboard RC cadence, neutral return, and flight response. | `tello_control_panel` | manual flight | Yes, safety-gated |
 | `E8-PWR-CYCLE` | Validate full session/video recovery after drone restart. | `tello_cli --video-watch` | 180 s | Yes |
-| `E9-WIFI-LOSS` | Optional command-only reconnect evidence. | `tello_cli --watch` | 120 s | Optional |
-| `E10-VID-RESET` | Optional video-only stream reset evidence. | `tello_cli --video-watch` | 120 s | Optional |
+| `E9-WIFI-LOSS` | Command-only reconnect evidence. | `tello_cli --watch` | 120 s | Yes |
 
 ## E1-SMOKE-CMD - Connectivity Smoke Test
 
@@ -330,8 +336,8 @@ state csv:       ../results/E5-GUI-VID-IDLE-001-state.csv
 ```
 
 4. Click `Start Recording`.
-5. In Operation, select `FFmpeg Stream` as the Vision backend.
-6. Click `Start Vision`.
+5. Confirm Vision is using the FFmpeg Stream path. This is the only active video backend.
+6. Click `Start Vision` if video is not already running.
 7. Keep the drone stationary for 2-3 minutes.
 8. Click `Stop Vision`.
 9. Click `Stop Recording`.
@@ -422,13 +428,12 @@ Run only in a clear indoor area. Use aggression `20` first. Keep movement window
 2. Set:
 
 ```text
-GUI metrics csv: ../results/E7-KBD-RESPONSE-001.csv
-state csv:       ../results/E7-KBD-RESPONSE-001-state.csv
+GUI metrics csv: ../results/E7-KBD-RESPONSE-002.csv
+state csv:       ../results/E7-KBD-RESPONSE-002-state.csv
 ```
 
 3. Click `Start Recording`.
-4. In Operation, select `FFmpeg Stream`.
-5. Click `Start Vision` and wait until decoded frames are visible.
+4. Confirm FFmpeg Stream video is active, or click `Start Vision` and wait until decoded frames are visible.
 6. Select the tested keyboard profile.
 7. Confirm aggression is `20`.
 8. Click `takeoff` and confirm the dialog.
@@ -461,7 +466,7 @@ state csv:       ../results/E7-KBD-RESPONSE-001-state.csv
 
 1. state CSV `rc_a`, `rc_b`, `rc_c`, `rc_d`
 2. state CSV `rc_steady_elapsed_ms`
-3. RC p95/p99/max send gap from the notebook
+3. RC p95/p99/max send gap from the final analysis
 4. `command_mutex_wait_ms`
 5. `telemetry_quality`
 6. `telemetry_hz_ema`
@@ -551,11 +556,11 @@ At shutdown:
 
 The CSV should show the video/session stall, recovery attempt stages, successful SDK re-entry, and resumed video packets after the drone is reachable again.
 
-## Optional: E9-WIFI-LOSS - Command Reconnect
+## E9-WIFI-LOSS - Command Reconnect
 
-### When To Run
+### Objective
 
-Run this only if the report needs a command-only reconnect result. It is not required if `E8-PWR-CYCLE` already demonstrates the stronger recovery case.
+Validate that command-only watch mode can observe a Wi-Fi interruption, transition through loss/recovery states, and resume command responses after reconnect.
 
 ### Procedure
 
@@ -579,11 +584,11 @@ After 15-20 seconds, disconnect from Tello Wi-Fi for 5-10 seconds, reconnect, an
 3. `connection_state`
 4. `last_outage_failures`
 
-## Optional: E10-VID-RESET - Video-Only Stream Reset
+## Development-Only Optional: E10-VID-RESET - Video-Only Stream Reset
 
 ### When To Run
 
-Run this only if you can interrupt video without restarting the drone. If you power-cycle the drone, use `E8-PWR-CYCLE` instead.
+Run this only during development if you can interrupt video without restarting the drone. It is not part of the compact final evidence set. If you power-cycle the drone, use `E8-PWR-CYCLE` instead.
 
 ### Procedure
 
@@ -613,10 +618,10 @@ After 15-20 seconds, interrupt the stream from another control path if available
 After collecting CSV files, open:
 
 ```bash
-jupyter notebook notebooks/analyze_metrics.ipynb
+jupyter notebook notebooks/final_experiment_analysis.ipynb
 ```
 
-The notebook loads all `results/*.csv` files and generates:
+The final analysis notebook loads the curated experiment CSV files and generates:
 
 1. per-experiment summaries,
 2. CLI vs GUI telemetry comparisons,
@@ -624,7 +629,8 @@ The notebook loads all `results/*.csv` files and generates:
 4. GUI timing/rendering comparisons,
 5. keyboard RC cadence comparisons,
 6. wall-clock vs steady-clock validation for state CSV gaps,
-7. recovery-stage summaries.
+7. recovery-stage summaries;
+8. report figures saved under `notebooks/images/` and copied to `docs/images/`.
 
 For state CSV gap analysis, use `steady_elapsed_ms` and `rc_steady_elapsed_ms`, not wall-clock `timestamp_ms`.
 

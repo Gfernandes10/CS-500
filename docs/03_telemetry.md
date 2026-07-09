@@ -18,8 +18,10 @@ Implement and validate telemetry ingestion from DJI Tello state channel (`UDP 88
 3. Each packet is parsed into `TelloState`.
 4. Latest valid state is atomically replaced under mutex.
 5. Consumers pull snapshots using `getLatestState()`.
+6. The receiver also maintains a configurable recent-state ring buffer.
+7. During recording, state samples and RC command samples are stored on the same recording timeline and can be exported to CSV.
 
-This is a **latest-state cache** model (pull), not pub/sub yet.
+The core API remains a pull/latest-state-cache model. ROS2 integration adds pub/sub behavior outside the core by publishing `/tello/state` and related topics from the ROS driver.
 
 ## Observability API
 `StateReceiver::TelemetryStats` exposes:
@@ -31,6 +33,11 @@ This is a **latest-state cache** model (pull), not pub/sub yet.
 6. `rx_hz_instant`
 7. `rx_hz_ema`
 8. `last_packet_age_ms`
+9. `last_interarrival_ms`
+10. `max_interarrival_ms`
+11. `gap_events_300ms`
+12. `gap_events_500ms`
+13. `gap_events_1000ms`
 
 ### Rate Computation
 - `rx_hz_instant` is computed from inter-packet delta time.
@@ -47,13 +54,13 @@ This is a **latest-state cache** model (pull), not pub/sub yet.
 ## Test Strategy (Offline vs Hardware)
 1. Offline unit tests (default)
 - Run without drone/hardware dependency.
-- Current target: `unit_state_parser`.
+- Current parser target: `unit_state_parser`.
+- Metrics CSV/link-quality behavior is covered by `unit_metrics_collector`.
 - Labels: `unit`, `offline`.
 
 2. Optional hardware integration tests
 - Enabled only with `-DENABLE_HARDWARE_TESTS=ON`.
-- Current target: `hardware_command_channel`.
-- Labels: `hardware`, `integration`.
+- Hardware tests are manual/environment-dependent and are not part of the default offline test run.
 
 ### Commands
 1. Configure/build default (offline only):
@@ -63,14 +70,15 @@ This is a **latest-state cache** model (pull), not pub/sub yet.
 2. Run offline tests:
 - `ctest --test-dir build -L offline --output-on-failure`
 
-3. Enable and run hardware tests:
+3. Optional hardware tests can be enabled explicitly when a drone is available:
 - `cmake -S . -B build -DENABLE_HARDWARE_TESTS=ON`
 - `cmake --build build`
 - `ctest --test-dir build -L hardware --output-on-failure`
 
 ## Known Limitations
-1. Consumer model is pull-based; no callback/event streaming yet.
-2. Receiver currently stores only latest state, not historical buffer.
+1. Core consumers still use pull/latest-state access; pub/sub streaming is provided by the ROS layer.
+2. State recording depends on UDP packet arrival and local scheduling; large inter-sample gaps should be interpreted as telemetry/receiver/logging continuity events.
+3. Hardware tests remain manual/optional and environment-dependent.
 
 ## Phase C Checklist (Current)
 - [x] Parser implemented
@@ -79,10 +87,10 @@ This is a **latest-state cache** model (pull), not pub/sub yet.
 - [x] Runtime receiver smoke validated
 - [x] Telemetry metrics API (rate/age/counters) implemented
 - [x] Telemetry integrated in main CLI (`--state-watch`)
+- [x] State history buffer implemented
+- [x] State recording and CSV export implemented
+- [x] RC command samples recorded alongside state recording
 - [x] Automated tests consolidated in project test target (offline default + optional hardware)
-
-## Next Step
-Begin Phase D (Video channel) implementation.
 
 ---
 
@@ -99,7 +107,9 @@ Begin Phase D (Video channel) implementation.
 3. Thread-safe latest-state snapshot API.
 4. Telemetry observability API (`rx_hz`, packet counters, timeout/error counters, packet age).
 5. CLI integration mode for telemetry (`--state-watch`).
-6. Offline unit tests enabled by default and hardware tests kept optional.
+6. State history buffer and state recording/export support.
+7. RC command recording on the state recording timeline.
+8. Offline unit tests enabled by default and hardware tests kept optional.
 
 ### Validation Summary
 1. Build: passed.
@@ -109,9 +119,6 @@ Begin Phase D (Video channel) implementation.
 5. Observability metrics visibility (Hz/age/counters): passed.
 
 ### Residual Risks
-1. Consumer model remains pull-only (no callback/pub-sub stream yet).
-2. Receiver stores only latest state, not historical buffer.
-3. Hardware tests remain manual/optional and environment-dependent.
-
-### Phase D Entry Gate
-- ✅ Telemetry foundation is considered ready for video channel work.
+1. Consumer model remains pull-based in the core library; ROS provides pub/sub integration.
+2. Hardware tests remain manual/optional and environment-dependent.
+3. Telemetry quality remains sensitive to Wi-Fi, drone state, and local scheduling.

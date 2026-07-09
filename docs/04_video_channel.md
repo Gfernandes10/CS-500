@@ -2,7 +2,7 @@
 
 ## Objective
 
-Implement and validate a robust DJI Tello video channel using a single FFmpeg Stream pipeline. The goal is to provide smooth live viewing, frame-level metrics, and recovery behavior without maintaining a second manual H264/NAL runtime path.
+Implement and validate a robust DJI Tello video channel using a single FFmpeg Stream pipeline. The goal is to provide smooth live viewing, frame-level metrics, and recovery behavior through one maintained video runtime path.
 
 ## Scope Implemented
 
@@ -90,7 +90,7 @@ The CMake configuration requires FFmpeg for video builds. If FFmpeg is missing, 
 
 4. Confirm the CLI reports `video_backend: FFmpeg Stream`.
 5. Confirm decoded frames, frame size, decode FPS, and keyframes increase.
-6. Open the Control Panel, connect to SDK mode, and press `Start View`.
+6. Open the Control Panel, connect to SDK mode, and press `Start Vision` if video is not already running.
 7. Confirm the video view updates smoothly and the Vision section reports FFmpeg stream statistics.
 8. For recovery validation, interrupt the stream or power-cycle the drone and confirm recovery stages are logged.
 
@@ -98,7 +98,7 @@ The CMake configuration requires FFmpeg for video builds. If FFmpeg is missing, 
 
 1. FFmpeg Stream is the sole active video runtime path.
 2. CLI and Control Panel video experiments use the same backend.
-3. Real-drone experiments showed decode FPS around 31-32 FPS in successful runs.
+3. Real-drone experiments showed decode FPS around 31-34 FPS in successful runs.
 4. The Control Panel can display live video while logging telemetry, GUI timing, and keyboard RC commands.
 5. Power-cycle recovery can re-enter SDK mode and restart the stream when the drone becomes reachable again.
 

@@ -24,7 +24,8 @@ Implement and validate a reliable command/response channel for DJI Tello over UD
 
 4. Connection state is owned by the client layer.
 - `ConnectionState`: `CONNECTED`, `RECOVERING`, `DISCONNECTED`.
-- `ConnectionEvent`: `LOST`, `RESTORED`.
+- `ConnectionEvent`: `LOST`, `RESTORED`, `TRANSIENT_LOSS_RECOVERED`.
+- `TRANSIENT_LOSS_RECOVERED` is used when one or more internal attempts fail but the high-level command eventually returns `OK` after recovery/retry.
 
 5. Reliability policy is configurable at client API level.
 - `TelloClient::ReliabilityConfig` centralizes command retry and session recovery constants.
@@ -33,6 +34,23 @@ Implement and validate a reliable command/response channel for DJI Tello over UD
 6. CLI supports two operational modes.
 - `--once`: single smoke run for quick checks.
 - `--watch`: continuous reconnect test loop for runtime validation.
+- `--state-watch`: telemetry receiver diagnostics and metrics export.
+- `--video-watch`: FFmpeg Stream video diagnostics and recovery validation.
+
+7. Critical commands use a longer timeout.
+- Normal queries such as `battery?` use the regular command timeout.
+- Critical operations such as `takeoff`, `land`, stream control, recovery, and emergency paths can use the critical-command timeout policy.
+- In the Qt Control Panel, critical commands are dispatched through a background command worker so the GUI event loop does not wait for SDK timeouts.
+
+8. RC commands use a no-wait send path.
+- Continuous `rc a b c d` commands are sent without waiting for an SDK response.
+- The project intentionally does not depend on per-RC ACK behavior for keyboard control.
+- A dedicated RC worker keeps command timing independent from GUI rendering.
+
+9. SDK keepalive is centralized in `TelloClient`.
+- When no RC stream is active, keepalive can periodically send `battery?`.
+- This avoids long idle periods with no SDK commands; the Tello SDK states that the drone automatically lands if it receives no command for 15 seconds.
+- Keepalive is paused around manual/critical command paths and while keyboard RC is active.
 
 ## Validation Matrix
 
@@ -79,8 +97,10 @@ Result:
 - Passed in repeated runs.
 
 ## Known Limitations
-1. Stop responsiveness depends on active network call windows.
-2. No formal automated unit tests yet for failure-injection paths.
+1. UDP command/response behavior can produce delayed or missing responses even when the drone physically executes the command.
+2. Real-drone testing showed recovered transient command outages around periodic `battery?` queries; packet capture indicated absent or late drone responses rather than local API parsing failure.
+3. RC commands are intentionally no-wait; safety depends on repeated RC cadence, neutral fallback, and link-quality monitoring rather than per-command acknowledgement.
+4. Additional offline tests are still desirable for failure-injection and retry paths.
 
 ## Phase B Exit Criteria
 - [x] Build succeeds.
@@ -88,9 +108,5 @@ Result:
 - [x] `battery?` returns payload reliably in connected state.
 - [x] Recovery works after Wi-Fi loss and return in same process.
 - [x] Connection state/events are exposed by `TelloClient`.
-
-## Next Step (Phase C)
-Start telemetry implementation:
-1. Parser robustness in [tello_core/src/state_parser.cpp](../tello_core/src/state_parser.cpp).
-2. Receiver loop and thread-safe state in [tello_core/src/state_receiver.cpp](../tello_core/src/state_receiver.cpp).
-3. Unit tests focused on state parsing edge cases.
+- [x] Transient recovered command outages are represented separately from persistent loss.
+- [x] Critical-command timing and command attempt logs are exported through metrics.
