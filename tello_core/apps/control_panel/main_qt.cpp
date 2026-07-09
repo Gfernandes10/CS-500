@@ -3758,12 +3758,55 @@ private:
         raw_command_edit_->clear();
     }
 
+    bool runRosServiceCall(const QStringList& arguments, const QString& label, int timeout_ms) {
+        QProcess process;
+        process.start("ros2", arguments);
+        if (!process.waitForStarted(3000)) {
+            appendLog(label + " => failed to start ros2");
+            return false;
+        }
+
+        if (!process.waitForFinished(timeout_ms)) {
+            process.kill();
+            process.waitForFinished(1000);
+            appendLog(label + " => timeout");
+            return false;
+        }
+
+        const QString stdout_text = QString::fromLocal8Bit(process.readAllStandardOutput());
+        const QString stderr_text = QString::fromLocal8Bit(process.readAllStandardError());
+        const QString combined = (stdout_text + "\n" + stderr_text).simplified();
+        const bool process_ok =
+            process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+        const bool service_success =
+            combined.contains("success=True", Qt::CaseInsensitive)
+            || combined.contains("success: true", Qt::CaseInsensitive);
+        const bool service_failure =
+            combined.contains("success=False", Qt::CaseInsensitive)
+            || combined.contains("success: false", Qt::CaseInsensitive);
+
+        QString summary = combined;
+        constexpr int kMaxSummaryChars = 240;
+        if (summary.size() > kMaxSummaryChars) {
+            summary = summary.left(kMaxSummaryChars) + "...";
+        }
+
+        if (process_ok && service_success && !service_failure) {
+            appendLog(label + " => success" + (summary.isEmpty() ? "" : " | " + summary));
+            return true;
+        }
+
+        appendLog(label + " => failed"
+                  + (summary.isEmpty() ? "" : " | " + summary)
+                  + " | exit " + QString::number(process.exitCode()));
+        return false;
+    }
+
     bool callRosTriggerService(const QString& service, const QString& label) {
-        const int rc = QProcess::execute(
-            "ros2",
-            {"service", "call", service, "std_srvs/srv/Trigger", "{}"});
-        appendLog(label + " via ROS service " + service + " => exit " + QString::number(rc));
-        return rc == 0;
+        return runRosServiceCall(
+            {"service", "call", service, "std_srvs/srv/Trigger", "{}"},
+            label + " via ROS service " + service,
+            60000);
     }
 
     bool callRosCommandService(const QString& command, const QString& source) {
@@ -3772,10 +3815,10 @@ private:
         escaped_command.replace("\\", "\\\\").replace("'", "''");
         escaped_source.replace("\\", "\\\\").replace("'", "''");
         const QString payload = "{command: '" + escaped_command + "', source: '" + escaped_source + "'}";
-        const int rc = QProcess::execute(
-            "ros2",
-            {"service", "call", "/tello/gui_command", "tello_interfaces/srv/Command", payload});
-        return rc == 0;
+        return runRosServiceCall(
+            {"service", "call", "/tello/gui_command", "tello_interfaces/srv/Command", payload},
+            command + " via ROS service /tello/gui_command",
+            30000);
     }
 
     tello::TelloClient client_;
