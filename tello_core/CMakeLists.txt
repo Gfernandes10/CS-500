@@ -213,14 +213,14 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_DATADIR}/tello_core
 )
 
-# Binary release packaging. GitHub Releases can publish the generated .tar.gz
-# and .deb so ROS users can install the runtime without cloning this full repo.
+# Binary release packaging. GitHub Releases publish this runtime .tar.gz so ROS
+# users can install the runtime without cloning this full repo.
 set(CPACK_PACKAGE_NAME "tello_core")
 set(CPACK_PACKAGE_VENDOR "CS500")
 set(CPACK_PACKAGE_CONTACT "Gabriel Fernandes")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "C++ runtime, CLI, and Qt control panel for DJI Tello")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}")
 set(CPACK_GENERATOR "TGZ")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Gabriel Fernandes")
 set(CPACK_DEBIAN_PACKAGE_SECTION "devel")

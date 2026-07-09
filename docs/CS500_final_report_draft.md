@@ -206,7 +206,7 @@ The initial concern during flight testing was that GUI stalls could cause a move
 
 ROS, the Robot Operating System, is a common middleware framework used in robotics to connect sensors, controllers, planning algorithms, visualization tools, and hardware drivers. Despite its name, ROS is not an operating system in the traditional kernel sense. It provides conventions and libraries for building distributed robot software. In ROS2, independent processes called nodes communicate through typed topics, request/response services, actions, parameters, launch files, and a DDS-based discovery and transport layer. A typical robotics system uses a hardware driver node to publish sensor data and accept commands, while other nodes perform mapping, planning, control, visualization, or logging. Tools such as `ros2 topic echo`, `ros2 service call`, `rqt`, and RViz are then used to inspect and interact with the running graph.
 
-The project includes a separate ROS2 Jazzy integration workspace. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
+The project includes a separate ROS2 Jazzy integration workspace, prepared as its own GitHub repository rather than as a subdirectory of the academic source tree. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
 
 The ROS workspace is organized into four packages:
 
@@ -215,13 +215,13 @@ The ROS workspace is organized into four packages:
 3. `tello_driver`, which implements the broker node that owns the drone command channel;
 4. `tello_bringup`, which provides launch files for starting the driver and GUI together.
 
-The dependency on the CS 500 core repository is therefore release-based rather than source-tree-based. The ROS workspace does not need to clone or carry the full academic repository. During development, the vendor package can consume a local release artifact:
+The dependency on the CS 500 core repository is therefore release-based rather than source-tree-based. The ROS repository contains the ROS packages, launch files, interfaces, README, and small runtime configuration files, while generated `build/`, `install/`, and `log/` directories are excluded from version control. The ROS workspace does not need to clone or carry the full academic repository. During development, the vendor package can consume a local release artifact:
 
 ```bash
 colcon build --cmake-clean-cache --cmake-args \
   -DTELLO_CORE_VERSION=1.0.0 \
   -DTELLO_CORE_VENDOR_FORCE_DOWNLOAD=ON \
-  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core-1.0.0-Linux-x86_64.tar.gz
+  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core.tar.gz
 ```
 
 For a published GitHub release, the same package can construct the artifact URL from a version and base release path:
@@ -293,21 +293,21 @@ The core API can also be used without ROS. In standalone mode, the CLI tools and
 
 For users who want to consume the API as a dependency, the preferred distribution path is the versioned release artifact rather than a direct build from the academic source tree. A release contains only the runtime-facing files: public headers, the compiled library, CMake package metadata, runtime resources, and the CLI/Control Panel executables. This allows another C++ or ROS project to depend on a fixed `tello_core` version without copying documentation, notebooks, experiment results, or planning files.
 
-A user can obtain a specific version from the project releases page. For example, version `1.0.0` can be downloaded and extracted as follows:
+A user can obtain a specific version from the project releases page. The archive name is stable as `tello_core.tar.gz`; the version is selected by the GitHub tag, such as `v1.0.0`, and by downstream build parameters such as `TELLO_CORE_VERSION`. For example, version `1.0.0` can be downloaded and extracted as follows:
 
 ```bash
 mkdir -p $HOME/tello_core_releases
 curl -L \
-  -o /tmp/tello_core-1.0.0-Linux-x86_64.tar.gz \
-  https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
-tar -xzf /tmp/tello_core-1.0.0-Linux-x86_64.tar.gz \
+  -o /tmp/tello_core.tar.gz \
+  https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core.tar.gz
+tar -xzf /tmp/tello_core.tar.gz \
   -C $HOME/tello_core_releases
 ```
 
 After extraction, the release directory can be used as an installation prefix:
 
 ```bash
-export TELLO_CORE_PREFIX=$HOME/tello_core_releases/tello_core-1.0.0-Linux-x86_64
+export TELLO_CORE_PREFIX=$HOME/tello_core_releases/tello_core
 export PATH=$TELLO_CORE_PREFIX/bin:$PATH
 export CMAKE_PREFIX_PATH=$TELLO_CORE_PREFIX:$CMAKE_PREFIX_PATH
 ```
@@ -447,11 +447,11 @@ An accompanying continuous evidence video will be linked here after upload: [CS 
 
 **Planned goal.** Phase 5 was intended to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools. The plan named ROS2 Humble or a compatible ROS2 version; the delivered implementation uses ROS2 Jazzy.
 
-**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, notebooks, experiment results, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
+**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace and prepared as an independent GitHub repository. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, notebooks, experiment results, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
 
 The delivered driver node wraps the existing core library and publishes telemetry, battery, connection state, video frames, diagnostics, and aggregate link quality. It subscribes to normalized velocity commands on `/tello/cmd_vel`, converts them to Tello RC commands, and exposes services for connection management, takeoff, landing, emergency stop, stream control, autonomy enable/disable, and GUI command forwarding. The Qt Control Panel can be launched in ROS mode so that the GUI sends commands through the ROS broker instead of talking directly to the drone. Offline build and interface tests were performed with `colcon build`, `colcon test`, and ROS command-line tools. The launch path was also validated with the real drone by connecting through the ROS service path and confirming ROS-mode telemetry and video in the GUI.
 
-**Evidence included.** The ROS2 Integration section lists the delivered packages, topics, services, launch flow, command ownership model, and command arbitration policy. The accompanying evidence video shows the ROS2 workspace build, test run, custom packages, custom interfaces, and ROS-mode Control Panel launch. The final ROS build/test evidence showed four packages built successfully and four tests passing with zero errors, zero failures, and zero skipped tests.
+**Evidence included.** The ROS2 Integration section lists the delivered packages, topics, services, launch flow, command ownership model, command arbitration policy, and repository boundary. The accompanying evidence video shows the ROS2 workspace build, test run, custom packages, custom interfaces, and ROS-mode Control Panel launch. The final ROS build/test evidence showed four packages built successfully and four tests passing with zero errors, zero failures, and zero skipped tests.
 
 ### 5.7 Phase 6: Desktop GUI
 

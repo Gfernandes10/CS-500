@@ -8,7 +8,7 @@ release, sem clonar o repositório completo do projeto.
 O release do `tello_core` agora publica apenas um `.tar.gz`:
 
 ```text
-tello_core-<versao>-Linux-x86_64.tar.gz
+tello_core.tar.gz
 ```
 
 Esse arquivo contem somente o runtime necessario para consumidores como o
@@ -24,6 +24,8 @@ share/tello_core/control_profiles.json
 ```
 
 Ele nao inclui `docs/`, `notebooks/`, `results/` ou arquivos de pesquisa.
+O versionamento fica na tag do GitHub Release, por exemplo `v1.0.0`, e no
+parametro `TELLO_CORE_VERSION` usado por consumidores como o pacote ROS.
 
 ## Dependencias do sistema
 
@@ -53,19 +55,27 @@ sudo apt install -y libopencv-dev
 No computador que vai publicar o release:
 
 ```bash
+source /opt/ros/jazzy/setup.bash
+source "/home/gabriel_fernandes/CS 500 - ROS/install/setup.bash"
+
 cmake -S tello_core -B build/tello_core_release \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr
+  -DCMAKE_INSTALL_PREFIX=/usr \
+  -DTELLO_ENABLE_ROS_CONTROL_PANEL=ON
 cmake --build build/tello_core_release
 cpack --config build/tello_core_release/CPackConfig.cmake
 ```
+
+O `TELLO_ENABLE_ROS_CONTROL_PANEL=ON` garante que o `tello_control_panel`
+incluido no artefato consuma telemetria, link quality e video por topicos ROS
+quando iniciado com `--ros-mode`.
 
 Por padrão, o `cpack --config ...` escreve o pacote no diretório em que o
 comando foi executado. Se você rodar o comando a partir da raiz do workspace
 `CS 500`, o arquivo será criado em:
 
 ```text
-./tello_core-1.0.0-Linux-x86_64.tar.gz
+./tello_core.tar.gz
 ```
 
 Esse arquivo já pode ser usado diretamente no GitHub Release.
@@ -80,7 +90,7 @@ cpack --config build/tello_core_release/CPackConfig.cmake \
 Nesse caso, o pacote gerado fica em:
 
 ```text
-build/tello_core_release/tello_core-1.0.0-Linux-x86_64.tar.gz
+build/tello_core_release/tello_core.tar.gz
 ```
 
 Publique esse arquivo na página de GitHub Releases com uma tag compatível, por
@@ -93,7 +103,7 @@ v1.0.0
 O nome final esperado pelo `tello_core_vendor` é:
 
 ```text
-https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
+https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core.tar.gz
 ```
 
 ## Primeira release de teste no GitHub
@@ -106,9 +116,13 @@ não está instalado.
 Na raiz do workspace `CS 500`, rode:
 
 ```bash
+source /opt/ros/jazzy/setup.bash
+source "/home/gabriel_fernandes/CS 500 - ROS/install/setup.bash"
+
 cmake -S tello_core -B build/tello_core_release \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr
+  -DCMAKE_INSTALL_PREFIX=/usr \
+  -DTELLO_ENABLE_ROS_CONTROL_PANEL=ON
 
 cmake --build build/tello_core_release
 
@@ -118,7 +132,7 @@ cpack --config build/tello_core_release/CPackConfig.cmake
 Se você executou o `cpack` a partir da raiz `CS 500`, o arquivo será gerado em:
 
 ```text
-./tello_core-1.0.0-Linux-x86_64.tar.gz
+./tello_core.tar.gz
 ```
 
 Se você preferir que o arquivo seja gerado dentro do diretório de build, use:
@@ -131,7 +145,7 @@ cpack --config build/tello_core_release/CPackConfig.cmake \
 Nesse caso, o arquivo será:
 
 ```text
-build/tello_core_release/tello_core-1.0.0-Linux-x86_64.tar.gz
+build/tello_core_release/tello_core.tar.gz
 ```
 
 ### 2. Commit/push das mudanças do core
@@ -142,7 +156,7 @@ Antes da release, o ideal é commitar as mudanças de empacotamento/exportação
 git add tello_core/CMakeLists.txt \
   tello_core/cmake/tello_coreConfig.cmake.in \
   tello_core/apps/control_panel/main_qt.cpp \
-  TELLO_CORE_RELEASE_INSTALL.md
+  docs/TELLO_CORE_RELEASE_INSTALL.md
 
 git commit -m "Package tello_core runtime release"
 ```
@@ -185,7 +199,7 @@ Marque como **pre-release** se quiser deixar claro que é uma release de teste.
 No campo de upload, anexe apenas o `.tar.gz`:
 
 ```text
-tello_core-1.0.0-Linux-x86_64.tar.gz
+tello_core.tar.gz
 ```
 
 Não publique `.deb`; o fluxo atual do `tello_core_vendor` usa somente `.tar.gz`.
@@ -207,7 +221,7 @@ colcon build --cmake-clean-cache --cmake-args \
 O vendor vai montar automaticamente:
 
 ```text
-https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
+https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core.tar.gz
 ```
 
 Depois:
@@ -231,7 +245,7 @@ cd "/home/gabriel_fernandes/CS 500 - ROS"
 
 colcon build --cmake-clean-cache --cmake-args \
   -DTELLO_CORE_VERSION=1.0.0 \
-  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core-1.0.0-Linux-x86_64.tar.gz
+  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core.tar.gz
 ```
 
 Para uso em outras máquinas, as opções mais simples são:
@@ -282,31 +296,27 @@ colcon build --cmake-args \
 Com esses parametros, o vendor monta automaticamente:
 
 ```text
-${TELLO_CORE_RELEASE_BASE_URL}/v${TELLO_CORE_VERSION}/tello_core-${TELLO_CORE_VERSION}-Linux-x86_64.tar.gz
+${TELLO_CORE_RELEASE_BASE_URL}/v${TELLO_CORE_VERSION}/tello_core.tar.gz
 ```
 
 Ou seja:
 
 ```text
-https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
+https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core.tar.gz
 ```
 
-## Configurar outra plataforma
+## Plataformas e nome do artefato
 
-O sufixo padrao vem de `CMAKE_SYSTEM_NAME-CMAKE_SYSTEM_PROCESSOR`, normalmente:
+O fluxo atual nao codifica a plataforma no nome do arquivo. O asset publicado em
+cada tag deve se chamar:
 
 ```text
-Linux-x86_64
+tello_core.tar.gz
 ```
 
-Se o artefato tiver outro sufixo:
-
-```bash
-colcon build --cmake-args \
-  -DTELLO_CORE_VERSION=1.0.0 \
-  -DTELLO_CORE_RELEASE_BASE_URL=https://github.com/<usuario>/<repo>/releases/download \
-  -DTELLO_CORE_PLATFORM=Linux-aarch64
-```
+Se for necessario publicar multiplas arquiteturas dentro da mesma tag no futuro,
+sera preciso definir outro esquema de nomes ou reintroduzir um sufixo por
+plataforma. No pacote ROS, `TELLO_CORE_PLATFORM` ficou obsoleto e e ignorado.
 
 ## Escape para teste local ou URL especial
 
@@ -318,7 +328,7 @@ prioridade sobre a URL montada automaticamente:
 cd "/home/gabriel_fernandes/CS 500 - ROS"
 colcon build --cmake-args \
   -DTELLO_CORE_VERSION=1.0.0 \
-  -DTELLO_CORE_RELEASE_URL=file:///tmp/tello_core-1.0.0-Linux-x86_64.tar.gz
+  -DTELLO_CORE_RELEASE_URL=file:///tmp/tello_core.tar.gz
 ```
 
 ## Hash opcional
@@ -326,7 +336,7 @@ colcon build --cmake-args \
 Para builds mais reproduzíveis, publique ou calcule o SHA256:
 
 ```bash
-sha256sum tello_core-1.0.0-Linux-x86_64.tar.gz
+sha256sum tello_core.tar.gz
 ```
 
 E passe o hash no build:
@@ -346,7 +356,7 @@ O fluxo recomendado é usar `tello_core_vendor`, mas também é possível instal
 ```bash
 mkdir -p $HOME/tello_core_install
 wget -O /tmp/tello_core.tar.gz \
-  https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
+  https://github.com/<usuario>/<repo>/releases/download/v1.0.0/tello_core.tar.gz
 tar -xzf /tmp/tello_core.tar.gz -C $HOME/tello_core_install
 ```
 
@@ -354,5 +364,5 @@ Depois:
 
 ```bash
 cd ~/ros2_ws
-CMAKE_PREFIX_PATH=$HOME/tello_core_install:$CMAKE_PREFIX_PATH colcon build
+CMAKE_PREFIX_PATH=$HOME/tello_core_install/tello_core:$CMAKE_PREFIX_PATH colcon build
 ```
