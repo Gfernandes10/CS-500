@@ -206,7 +206,7 @@ The initial concern during flight testing was that GUI stalls could cause a move
 
 ROS, the Robot Operating System, is a common middleware framework used in robotics to connect sensors, controllers, planning algorithms, visualization tools, and hardware drivers. Despite its name, ROS is not an operating system in the traditional kernel sense. It provides conventions and libraries for building distributed robot software. In ROS2, independent processes called nodes communicate through typed topics, request/response services, actions, parameters, launch files, and a DDS-based discovery and transport layer. A typical robotics system uses a hardware driver node to publish sensor data and accept commands, while other nodes perform mapping, planning, control, visualization, or logging. Tools such as `ros2 topic echo`, `ros2 service call`, `rqt`, and RViz are then used to inspect and interact with the running graph.
 
-The project now includes a separate ROS2 Jazzy integration workspace. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
+The project includes a separate ROS2 Jazzy integration workspace. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
 
 The ROS workspace is organized into four packages:
 
@@ -362,7 +362,6 @@ cmake -S tello_core -B build/tello_core_standalone
 cmake --build build/tello_core_standalone
 ```
 
-Prebuilt binaries are not assumed to be portable across machines because they depend on the Linux distribution, CPU architecture, compiler, FFmpeg, Qt, and runtime library versions. For distribution, prebuilt binaries should be published separately as release artifacts rather than committed directly to the source repository.
 
 The offline tests can be run without a drone:
 
@@ -399,9 +398,9 @@ In standalone mode the Control Panel owns the command channel directly. If ROS m
 
 ## 5. Milestone Plan Traceability
 
-The original milestone plan divided the project into eight phases. This section maps each planned phase to the delivered implementation, the evidence currently available in the report, and any remaining evidence that should be added before the final submission.
+The original milestone plan divided the project into eight phases. This section maps each planned phase to the delivered implementation.
 
-An accompanying continuous evidence video will be linked here after upload: [CS 500 evidence video placeholder](https://youtu.be/REPLACE_WITH_FINAL_EVIDENCE_VIDEO). The video demonstrates the delivered artifacts for Phases 0, 1, 2, 3, 5, and 6. Phase 4 is evidenced primarily by the experimental methodology, CSV-based measurements, and quantitative results in this report. Phase 7 is evidenced by the final report and presentation artifacts themselves.
+An accompanying continuous evidence video will be linked here after upload: [CS 500 evidence video placeholder](https://youtu.be/REPLACE_WITH_FINAL_EVIDENCE_VIDEO). The video demonstrates the delivered artifacts for Phases 0, 1, 2, 3, 5, and 6. Phase 4 is evidenced primarily by the experimental methodology, CSV-based measurements, and quantitative results in this report. Phase 7 is evidenced by this final report.
 
 ### 5.1 Phase 0: Project Definition and Architecture
 
@@ -462,15 +461,15 @@ The delivered driver node wraps the existing core library and publishes telemetr
 
 **Evidence included.** The GUI screenshots describe the delivered interface. The GUI idle and keyboard-flight experiments validate that the Control Panel can display video and telemetry while logging metrics, and that it can be used during real drone operation. The accompanying evidence video demonstrates the global status area, Config tab, Operation tab, logging/export workflow, live video, telemetry plotting, and keyboard-control workflow.
 
-### 5.8 Phase 7: Final Report and Presentation
+### 5.8 Phase 7: Final Report
 
-**Planned goal.** Phase 7 was intended to produce the final technical report, presentation slides, and a live or recorded demo.
+**Planned goal.** Phase 7 was intended to produce the final technical report documenting the project scope, architecture, implementation, experiments, results, limitations, and future work.
 
-**Delivered work.** This phase is partially delivered. This draft report documents the architecture, SDK background, implementation, experiments, results, limitations, and milestone traceability. Figures and experiment summaries are included for the final PDF.
+**Delivered work.** This phase was delivered through this report. The report documents the architecture, SDK background, implementation, experiments, results, limitations, and milestone traceability. Figures and experiment summaries are included for the final PDF.
 
-**Evidence included.** The report already includes the major sections required for a technical project submission: problem definition, implementation, experiment methodology, results, discussion, limitations, and future work. This phase is evidenced by the final report, presentation material, and accompanying evidence video as submission artifacts.
+**Evidence included.** This report is the evidence for Phase 7. It includes the major sections required for a technical project submission: problem definition, implementation, experiment methodology, results, discussion, limitations, and future work.
 
-All major planned technical components have been delivered at least to an initial functional level. Several phases were expanded based on real-drone testing, especially metrics, recovery, GUI diagnostics, keyboard RC safety, link-quality monitoring, and ROS command arbitration. The main remaining technical validation work is end-to-end real-drone testing of the ROS launch path and any future closed-loop controller that consumes the ROS interface.
+All major planned technical components have been delivered at least to an initial functional level. Several phases were expanded based on real-drone testing, especially metrics, recovery, GUI diagnostics, keyboard RC safety, link-quality monitoring, and ROS command arbitration. 
 
 ## 6. Experimental Methodology
 
@@ -543,9 +542,11 @@ The Wi-Fi-loss run is a command-channel reconnect diagnostic. The CLI runs comma
 
 The final experiments produced a complete set of command, telemetry, video, GUI, keyboard RC, and recovery logs. The most important quantitative findings are summarized below.
 
+The figures in this section use the curated final experiment set: one smoke command run, one command-baseline run, one telemetry-only run, one CLI video run, one idle Control Panel run, one keyboard-flight run, one power-cycle recovery run, and one Wi-Fi-loss diagnostic run. 
+
 | Experiment | Key Result |
 |---|---|
-| `E2-CMD-BASE` | 121.6 s command baseline, 0 final command failures, 2 recovered transient command outages |
+| `E2-CMD-BASE` | 119.5 s command baseline, 0 final command failures, 2 recovered transient command outages |
 | `E3-STATE-CLI` | telemetry-only baseline ended with telemetry quality `OK` |
 | `E4-VIDEO-CLI` | FFmpeg Stream video ended with video quality `OK`, decoder FPS about 31.3 |
 | `E5-GUI-VID-IDLE` | valid idle GUI run; no RC commands; telemetry/video quality `OK/OK` |
@@ -555,9 +556,9 @@ The final experiments produced a complete set of command, telemetry, video, GUI,
 
 ### 7.1 Command Channel
 
-The command baseline measured SDK command behavior in a stable connection scenario. The run completed with 115 successful commands and no final command failures. Normal command samples had a median latency of approximately 16 ms and a filtered mean of approximately 23.0 ms when recovered outliers above 500 ms were excluded. The cumulative average including recovered transient outliers was higher, approximately 65.1 ms, because two command samples included delayed UDP response/recovery behavior. These recovered outliers occurred near 59.9 s and 121.6 s. This indicates that the normal command path is fast, while occasional transport outages can temporarily dominate the average without causing final command failure.
+The command baseline measured SDK command behavior in a stable connection scenario. The run completed with 113 successful commands and no final command failures. Normal command samples had a median latency of approximately 13 ms and a filtered mean of approximately 22.5 ms when recovered outliers above 500 ms were excluded. The cumulative average including recovered transient outliers was higher, approximately 65.7 ms, because two command samples included delayed UDP response/recovery behavior. These recovered outliers occurred near 59.1 s and 119.5 s. This indicates that the normal command path is fast, while occasional transport outages can temporarily dominate the average without causing final command failure.
 
-The plotted command latency is a cumulative running average. The first point is high because it is based on only one `battery?` response, around 70 ms. Later early-run `battery?` responses were mostly around 41-51 ms, so the running average falls as more samples are added. This should be interpreted as first-command or warm-up overhead plus cumulative-average convergence, not as evidence that every command continuously became faster.
+The command-latency figure focuses on two views: individual command samples and the running average after excluding samples above 500 ms. The first `battery?` sample in this run was higher than the steady-state samples, around 84 ms, while most later normal samples were much lower. This should be interpreted as first-command or warm-up overhead plus running-average convergence, not as evidence that every command continuously became faster.
 
 ![Command latency](images/e2_command_latency.png)
 
@@ -579,7 +580,7 @@ Telemetry age is important because stale telemetry would be unsafe for future fe
 
 ### 7.3 Video Performance
 
-The FFmpeg Stream path achieved usable real-time video performance. The CLI video baseline ended with video quality `OK` and decoder FPS around 31.3. The GUI and keyboard-flight runs also maintained video quality `OK` with decoder FPS around 31-32. As with telemetry, video quality here means stream freshness and continuity: recent decoded frames with acceptable interarrival are `OK`; delayed frames are `DEGRADED`; stale or missing frames are represented as `STALE` or `NO_DATA`.
+The FFmpeg Stream path achieved usable real-time video performance. The CLI video baseline ended with video quality `OK` and decoder FPS around 31.3. The idle Control Panel run ended around 31.6 FPS, and the repeated keyboard-flight run ended around 33.7 FPS while also maintaining video quality `OK`. As with telemetry, video quality here means stream freshness and continuity: recent decoded frames with acceptable interarrival are `OK`; delayed frames are `DEGRADED`; stale or missing frames are represented as `STALE` or `NO_DATA`.
 
 ![Video FPS](images/video_decode_fps_comparison.png)
 
@@ -660,7 +661,7 @@ Keyboard RC control required special attention because control commands can be s
 
 The command-channel packet-capture diagnosis also has implications for RC control. Query commands such as `battery?` wait for a response, so a delayed or missing UDP response appears as a timeout, retry, or recovered transient outage. RC commands are different: they are sent continuously through a no-wait path. A single lost RC packet is usually harmless because the dedicated worker sends another RC command shortly afterward. A longer UDP outage is more important. If the last RC command received by the drone was nonzero and neutral `rc 0 0 0 0` packets are delayed or lost, the drone may continue the previous motion until it receives a newer RC command. This is why the implementation emphasizes an independent RC worker, repeated neutral output when no input is active, stale-input detection, and high-priority neutral RC before critical commands. Future closed-loop control should treat command-channel freshness as a safety signal, not only as a logging metric.
 
-To support this, the core metrics layer now exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the ROS driver publishes the same signal as `/tello/link_quality`.
+To support this, the core metrics layer exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the ROS driver publishes the same signal as `/tello/link_quality`.
 
 For closed-loop control, this link-quality signal should be treated as a gating input. When quality is `OK`, normal command output can proceed. When quality is `DEGRADED`, a controller should consider reducing command magnitude, increasing neutral-command repetition, or holding the previous safe setpoint only briefly. When quality becomes `STALE` or `BLACKOUT`, the controller should avoid sustained nonzero RC and should prefer neutral RC, hover, landing, or emergency behavior depending on the flight context. The important point is that communication health becomes part of the control decision rather than only a post-run diagnostic.
 
@@ -676,9 +677,7 @@ The project has several limitations:
 2. Wi-Fi conditions are environment-dependent and may vary across rooms, laptops, and drivers.
 3. The RC reaction latency estimate is based on onboard telemetry, not external motion capture. Lateral and forward/backward response estimates use attitude proxies because direct SDK translational velocity fields did not provide reliable movement evidence in the repeated keyboard-flight run.
 4. The current system does not implement a closed-loop controller.
-5. The ROS2 bridge has been implemented, built, and validated in basic real-drone operation, but external autonomy nodes and longer stress runs remain future work.
-6. Some command responses, especially around `takeoff` and `land`, can be delayed or time out even when the drone physically executes the action. The GUI no longer waits for these responses on the main event loop, but the underlying SDK ambiguity remains.
-7. Thermal behavior can affect long back-to-back experiments.
+5. Thermal behavior can affect long back-to-back experiments.
 
 ## 10. Future Work: ROS2 Validation and Closed-Loop Control
 
