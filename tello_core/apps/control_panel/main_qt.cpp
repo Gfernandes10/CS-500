@@ -42,6 +42,16 @@
 #include <QWidget>
 #include <QFile>
 
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+#include <geometry_msgs/msg/twist.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <tello_interfaces/msg/link_quality.hpp>
+#include <tello_interfaces/msg/tello_state.hpp>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -469,6 +479,15 @@ public:
 
         appendLog(ros_mode_ ? "Panel ready in ROS mode. Commands are sent to /tello/gui_command."
                             : "Panel ready. Click Connect + SDK first.");
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        if (ros_mode_) {
+            startRosNativeInterface();
+        }
+#else
+        if (ros_mode_) {
+            appendLog("ROS native topic integration is not compiled; using ROS service calls only.");
+        }
+#endif
         appendLog("Logging export configuration active.");
         appendLog("Buttons added for control/set/read command families.");
         appendLog("Keyboard control profiles loaded from control_profiles.json.");
@@ -477,6 +496,9 @@ public:
     }
 
     ~ControlPanelWidget() override {
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        stopRosNativeInterface();
+#endif
         stopConnectWorker();
         performEmergencyShutdownIfConnected("panel destructor");
         qApp->removeEventFilter(this);
@@ -1805,6 +1827,166 @@ private:
         root->addWidget(g);
     }
 
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+    void startRosNativeInterface() {
+        if (ros_native_started_) {
+            return;
+        }
+        if (!rclcpp::ok()) {
+            appendLog("ROS native topic integration unavailable: rclcpp is not initialized.");
+            return;
+        }
+
+        ros_node_ = std::make_shared<rclcpp::Node>("tello_control_panel");
+        ros_manual_cmd_vel_pub_ = ros_node_->create_publisher<geometry_msgs::msg::Twist>("/tello/manual_cmd_vel", 10);
+
+        ros_state_sub_ = ros_node_->create_subscription<tello_interfaces::msg::TelloState>(
+            "/tello/state", 10,
+            [this](const tello_interfaces::msg::TelloState::SharedPtr msg) {
+                QMetaObject::invokeMethod(this, [this, msg]() { applyRosState(*msg); }, Qt::QueuedConnection);
+            });
+        ros_battery_sub_ = ros_node_->create_subscription<std_msgs::msg::Int32>(
+            "/tello/battery", 10,
+            [this](const std_msgs::msg::Int32::SharedPtr msg) {
+                QMetaObject::invokeMethod(this, [this, value = msg->data]() {
+                    if (battery_status_label_ != nullptr) {
+                        battery_status_label_->setText(QString("battery: %1%").arg(value));
+                    }
+                }, Qt::QueuedConnection);
+            });
+        ros_connection_sub_ = ros_node_->create_subscription<std_msgs::msg::String>(
+            "/tello/connection_state", 10,
+            [this](const std_msgs::msg::String::SharedPtr msg) {
+                QMetaObject::invokeMethod(this, [this, value = QString::fromStdString(msg->data)]() {
+                    ros_connection_state_ = value;
+                    sdk_ready_ = value.contains("CONNECTED");
+                    updateStatusLabel();
+                }, Qt::QueuedConnection);
+            });
+        ros_link_quality_sub_ = ros_node_->create_subscription<tello_interfaces::msg::LinkQuality>(
+            "/tello/link_quality", 10,
+            [this](const tello_interfaces::msg::LinkQuality::SharedPtr msg) {
+                QMetaObject::invokeMethod(this, [this, msg]() { applyRosLinkQuality(*msg); }, Qt::QueuedConnection);
+            });
+        ros_image_sub_ = ros_node_->create_subscription<sensor_msgs::msg::Image>(
+            "/tello/video/image_raw", 5,
+            [this](const sensor_msgs::msg::Image::SharedPtr msg) {
+                QMetaObject::invokeMethod(this, [this, msg]() { applyRosImage(*msg); }, Qt::QueuedConnection);
+            });
+
+        ros_native_started_ = true;
+        ros_spin_thread_ = std::thread([this]() {
+            rclcpp::spin(ros_node_);
+        });
+        appendLog("ROS native topics active: state, battery, connection, link quality, image, manual_cmd_vel.");
+    }
+
+    void stopRosNativeInterface() {
+        if (!ros_native_started_) {
+            return;
+        }
+        if (ros_node_) {
+            ros_node_->get_node_base_interface()->get_context()->shutdown("control panel closing");
+        }
+        if (ros_spin_thread_.joinable()) {
+            ros_spin_thread_.join();
+        }
+        ros_native_started_ = false;
+    }
+
+    void applyRosState(const tello_interfaces::msg::TelloState& msg) {
+        tello::TelloState state{};
+        state.pitch = msg.pitch;
+        state.roll = msg.roll;
+        state.yaw = msg.yaw;
+        state.vgx = msg.vgx;
+        state.vgy = msg.vgy;
+        state.vgz = msg.vgz;
+        state.templ = msg.templ;
+        state.temph = msg.temph;
+        state.tof = msg.tof;
+        state.h = msg.h;
+        state.bat = msg.bat;
+        state.baro = msg.baro;
+        state.time = msg.time;
+        state.agx = msg.agx;
+        state.agy = msg.agy;
+        state.agz = msg.agz;
+        state.mid = msg.mid;
+        state.x = msg.x;
+        state.y = msg.y;
+        state.z = msg.z;
+
+        tello::StateReceiver::StateSample sample;
+        sample.sequence = ++ros_state_sequence_;
+        sample.timestamp_ms = QDateTime::currentMSecsSinceEpoch();
+        sample.recording_elapsed_ms = gui_metrics_recording_
+            ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - recording_started_at_).count()
+            : -1;
+        sample.steady_elapsed_ms = sample.recording_elapsed_ms;
+        sample.state = state;
+
+        {
+            std::lock_guard<std::mutex> lock(ros_state_mutex_);
+            ros_state_buffer_.push_back(sample);
+            while (ros_state_buffer_.size() > ros_state_buffer_capacity_) {
+                ros_state_buffer_.pop_front();
+            }
+        }
+
+        if (battery_status_label_ != nullptr) {
+            battery_status_label_->setText(QString("battery: %1%").arg(state.bat));
+        }
+        if (temperature_status_label_ != nullptr) {
+            temperature_status_label_->setText(QString("temp: %1/%2 C").arg(state.templ).arg(state.temph));
+        }
+        metrics_.updateTelemetryState(state, msg.valid);
+        updateStatusLabel();
+    }
+
+    void applyRosLinkQuality(const tello_interfaces::msg::LinkQuality& msg) {
+        ros_link_overall_ = QString::fromStdString(msg.overall);
+        ros_link_reason_ = QString::fromStdString(msg.reason);
+        ros_link_score_ = msg.score;
+        ros_link_safe_for_nonzero_rc_ = msg.safe_for_nonzero_rc;
+        ros_have_link_quality_ = true;
+        updateTopLinkQualityLabel();
+    }
+
+    void applyRosImage(const sensor_msgs::msg::Image& msg) {
+        if (msg.encoding != "rgb8" || msg.width == 0 || msg.height == 0 || msg.step == 0 || msg.data.empty()) {
+            return;
+        }
+        vision_pipeline_running_ = true;
+        publishVisionRgbFrame(
+            msg.data.data(),
+            static_cast<int32_t>(msg.width),
+            static_cast<int32_t>(msg.height),
+            static_cast<int32_t>(msg.step),
+            false);
+        if (vision_status_label_ != nullptr) {
+            vision_status_label_->setText("status: ROS image topic | LIVE");
+        }
+        if (vision_size_label_ != nullptr) {
+            vision_size_label_->setText(QString("size: %1x%2").arg(msg.width).arg(msg.height));
+        }
+    }
+
+    bool publishRosManualCmdVel(int a, int b, int c, int d) {
+        if (!ros_manual_cmd_vel_pub_) {
+            return false;
+        }
+        geometry_msgs::msg::Twist msg;
+        msg.linear.y = static_cast<double>(a) / 100.0;
+        msg.linear.x = static_cast<double>(b) / 100.0;
+        msg.linear.z = static_cast<double>(c) / 100.0;
+        msg.angular.z = static_cast<double>(d) / 100.0;
+        ros_manual_cmd_vel_pub_->publish(msg);
+        return true;
+    }
+#endif
+
     void refreshStateHistoryView() {
         const auto tick_started_at = std::chrono::steady_clock::now();
         updateStateRecordingStatusIndicators();
@@ -1814,6 +1996,53 @@ private:
         }
         last_state_gui_tick_tp_ = tick_started_at;
         has_last_state_gui_tick_ = true;
+
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        if (ros_mode_ && ros_native_started_) {
+            std::vector<tello::StateReceiver::StateSample> buffered;
+            tello::TelloState latest{};
+            bool has_latest = false;
+            {
+                std::lock_guard<std::mutex> lock(ros_state_mutex_);
+                buffered.assign(ros_state_buffer_.begin(), ros_state_buffer_.end());
+                if (!ros_state_buffer_.empty()) {
+                    latest = ros_state_buffer_.back().state;
+                    has_latest = true;
+                }
+            }
+
+            if (has_latest) {
+                if (battery_status_label_ != nullptr) {
+                    battery_status_label_->setText(QString("battery: %1%").arg(latest.bat));
+                }
+                if (temperature_status_label_ != nullptr) {
+                    temperature_status_label_->setText(
+                        QString("temp: %1/%2 C").arg(latest.templ).arg(latest.temph));
+                }
+                metrics_.updateTelemetryState(latest, true);
+            }
+
+            const auto metric = state_metric_combo_ != nullptr ? state_metric_combo_->currentText() : QString("pitch");
+            if (state_plot_widget_ != nullptr) {
+                state_plot_widget_->setSamples(buffered, metric);
+            }
+            if (state_buffer_info_label_ != nullptr) {
+                state_buffer_info_label_->setText(
+                    QString("ROS samples=%1 / cap=%2")
+                        .arg(static_cast<int>(buffered.size()))
+                        .arg(ros_state_buffer_capacity_));
+            }
+            if (state_record_info_label_ != nullptr) {
+                state_record_info_label_->setText("ROS telemetry topic active");
+            }
+
+            last_state_refresh_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tick_started_at).count();
+            updateRuntimeMetricsContext();
+            updateTopLinkQualityLabel();
+            return;
+        }
+#endif
 
         if (state_receiver_.isRunning()) {
             const auto history_fetch_started_at = std::chrono::steady_clock::now();
@@ -1927,7 +2156,14 @@ private:
                     .arg(vision_paused_ ? "PAUSED" : "LIVE"));
         }
 
-        if (vision_pipeline_running_) {
+        bool use_standalone_vision_pipeline = vision_pipeline_running_;
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        if (ros_mode_ && ros_native_started_) {
+            use_standalone_vision_pipeline = false;
+        }
+#endif
+
+        if (use_standalone_vision_pipeline) {
             ensureSdkKeepaliveRunning("vision");
             writeVisionMetricsRowIfDue();
 
@@ -1990,11 +2226,21 @@ private:
 
         QImage composed = frame_to_show.copy();
         if (vision_overlay_enabled_) {
-            const auto stream_stats = video_stream_reader_.getStats();
-
             QPainter p(&composed);
             p.setRenderHint(QPainter::Antialiasing, true);
             p.setPen(QPen(QColor(0, 255, 110), 1));
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+            if (ros_mode_ && ros_native_started_) {
+                p.drawText(10, 22, QString("ROS image topic frames=%1")
+                                    .arg(static_cast<qulonglong>(vision_latest_frame_sequence_.load())));
+                p.drawText(10, 42, "source=/tello/video/image_raw");
+                p.drawText(10, 62, QString("state=%1 controls: Pause, Snapshot, Overlay")
+                                    .arg(vision_paused_ ? "PAUSED" : "LIVE"));
+            } else
+#endif
+            {
+                const auto stream_stats = video_stream_reader_.getStats();
+
             p.drawText(10, 22, QString("fps=%1 frames=%2 keyframes=%3")
                                 .arg(stream_stats.decode_fps_ema, 0, 'f', 2)
                                 .arg(static_cast<qulonglong>(stream_stats.frames_decoded))
@@ -2004,6 +2250,7 @@ private:
                                 .arg(static_cast<qulonglong>(stream_stats.decode_errors)));
             p.drawText(10, 62, QString("state=%1 controls: Pause, Snapshot, Overlay")
                                 .arg(vision_paused_ ? "PAUSED" : "LIVE"));
+            }
         }
 
         if (vision_frame_label_ != nullptr) {
@@ -2185,6 +2432,15 @@ private:
     }
 
     bool startVisionWithStreamOn() {
+        if (ros_mode_) {
+            runCommandWithResponse("streamon", "vision");
+            vision_pipeline_running_ = true;
+            if (vision_status_label_ != nullptr) {
+                vision_status_label_->setText("status: waiting for /tello/video/image_raw");
+            }
+            return true;
+        }
+
         if (!ensureSdkReady()) {
             return false;
         }
@@ -2226,6 +2482,12 @@ private:
     }
 
     void stopVisionWithStreamOff() {
+        if (ros_mode_) {
+            runCommandWithResponse("streamoff", "vision");
+            stopVisionPipeline();
+            return;
+        }
+
         stopVisionPipeline();
 
         if (!sdk_ready_) {
@@ -2424,7 +2686,16 @@ private:
         const bool parsed_rc = parseRcCommand(cmd, a, b, c, d);
 
         if (ros_mode_) {
-            const bool ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
+            bool ok = false;
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+            if (parsed_rc && ros_native_started_) {
+                ok = publishRosManualCmdVel(a, b, c, d);
+            } else {
+                ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
+            }
+#else
+            ok = callRosCommandService(QString::fromStdString(cmd), QString::fromStdString(source));
+#endif
             if (parsed_rc) {
                 const auto rc = ok ? tello::ResponseCode::OK : tello::ResponseCode::ERROR;
                 state_receiver_.recordRcCommandSample(a, b, c, d, source, rc);
@@ -2542,6 +2813,26 @@ private:
             return;
         }
 
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        if (ros_mode_ && ros_have_link_quality_) {
+            const QString safe = ros_link_safe_for_nonzero_rc_ ? "RC SAFE" : "RC HOLD";
+            link_quality_label_->setText(
+                QString("link: %1 (%2) | %3").arg(ros_link_overall_).arg(ros_link_score_).arg(safe));
+            link_quality_label_->setToolTip(ros_link_reason_);
+
+            QString color = "#8E8E93";
+            if (ros_link_overall_ == "OK") {
+                color = "#2ECC71";
+            } else if (ros_link_overall_ == "DEGRADED") {
+                color = "#D6A21A";
+            } else if (ros_link_overall_ == "STALE" || ros_link_overall_ == "BLACKOUT") {
+                color = "#EE5858";
+            }
+            link_quality_label_->setStyleSheet(QString("QLabel { color: %1; font-weight: 600; }").arg(color));
+            return;
+        }
+#endif
+
         const auto link = metrics_.getLinkQualitySnapshot();
         const QString label = QString::fromStdString(link.overall);
         const QString safe = link.safe_for_nonzero_rc ? "RC SAFE" : "RC HOLD";
@@ -2562,8 +2853,14 @@ private:
 
     void updateStatusLabel() {
         updateRuntimeMetricsContext();
+        QString state_text = QString::fromStdString(connectionStateToString(client_.getConnectionState()));
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+        if (ros_mode_ && !ros_connection_state_.isEmpty()) {
+            state_text = ros_connection_state_;
+        }
+#endif
         status_label_->setText(
-            "State: " + QString::fromStdString(connectionStateToString(client_.getConnectionState()))
+            "State: " + state_text
             + " | SDK: " + QString(sdk_ready_ ? "READY" : "NOT_READY")
             + " | CONNECTING=" + QString(connect_in_progress_.load() ? "YES" : "NO")
             + " | RC_STREAM=" + QString((rc_stream_timer_ != nullptr && rc_stream_timer_->isActive()) ? "ON" : "OFF")
@@ -3617,6 +3914,28 @@ private:
     uint64_t last_vision_metrics_packets_ = 0;
     uint64_t last_metrics_state_packets_valid_ = 0;
 
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+    bool ros_native_started_ = false;
+    std::shared_ptr<rclcpp::Node> ros_node_;
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr ros_manual_cmd_vel_pub_;
+    rclcpp::Subscription<tello_interfaces::msg::TelloState>::SharedPtr ros_state_sub_;
+    rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr ros_battery_sub_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr ros_connection_sub_;
+    rclcpp::Subscription<tello_interfaces::msg::LinkQuality>::SharedPtr ros_link_quality_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ros_image_sub_;
+    std::thread ros_spin_thread_;
+    std::mutex ros_state_mutex_;
+    std::deque<tello::StateReceiver::StateSample> ros_state_buffer_;
+    size_t ros_state_buffer_capacity_ = 1000;
+    uint64_t ros_state_sequence_ = 0;
+    QString ros_connection_state_;
+    bool ros_have_link_quality_ = false;
+    QString ros_link_overall_ = "NO_DATA";
+    QString ros_link_reason_ = "no ROS link-quality sample";
+    int32_t ros_link_score_ = 0;
+    bool ros_link_safe_for_nonzero_rc_ = false;
+#endif
+
     QSpinBox* speed_spin_ = nullptr;
     QSlider* rc_lr_slider_ = nullptr;
     QSlider* rc_fb_slider_ = nullptr;
@@ -3681,6 +4000,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+    if (ros_mode) {
+        rclcpp::init(argc, argv);
+    }
+#endif
+
     ControlPanelWidget panel(ros_mode);
     std::signal(SIGINT, [](int) {
         QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
@@ -3692,5 +4017,11 @@ int main(int argc, char* argv[]) {
     panel.showNormal();
     panel.raise();
     panel.activateWindow();
-    return app.exec();
+    const int rc = app.exec();
+#ifdef TELLO_CONTROL_PANEL_ROS_NATIVE
+    if (ros_mode && rclcpp::ok()) {
+        rclcpp::shutdown();
+    }
+#endif
+    return rc;
 }

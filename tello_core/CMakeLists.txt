@@ -18,6 +18,7 @@ option(TELLO_ENABLE_FFMPEG "Enable FFmpeg video decoder backend when available" 
 option(TELLO_REQUIRE_FFMPEG "Require FFmpeg backend and fail configure if missing" ON)
 option(TELLO_ENABLE_OPENCV_VIEWER "Enable OpenCV rendering support for GUI/fallback tools" ON)
 option(TELLO_ENABLE_QT_CONTROL_PANEL "Enable Qt-based tello_control_panel when Qt Widgets is available" ON)
+option(TELLO_ENABLE_ROS_CONTROL_PANEL "Enable native ROS 2 topic integration in the Qt control panel" OFF)
 
 find_package(PkgConfig QUIET)
 if(TELLO_ENABLE_FFMPEG AND PkgConfig_FOUND)
@@ -87,6 +88,7 @@ add_executable(tello_cli
 target_link_libraries(tello_cli PRIVATE tello_core)
 
 set(TELLO_QT_WIDGETS_TARGET "")
+set(TELLO_ROS_CONTROL_PANEL_DEPS "")
 if(TELLO_ENABLE_QT_CONTROL_PANEL)
     find_package(Qt6 QUIET COMPONENTS Widgets)
     if(Qt6_FOUND)
@@ -101,11 +103,32 @@ if(TELLO_ENABLE_QT_CONTROL_PANEL)
     endif()
 endif()
 
+if(TELLO_QT_WIDGETS_TARGET AND TELLO_ENABLE_ROS_CONTROL_PANEL)
+    find_package(ament_cmake REQUIRED)
+    find_package(rclcpp REQUIRED)
+    find_package(geometry_msgs REQUIRED)
+    find_package(sensor_msgs REQUIRED)
+    find_package(std_msgs REQUIRED)
+    find_package(tello_interfaces REQUIRED)
+    set(TELLO_ROS_CONTROL_PANEL_DEPS
+        rclcpp
+        geometry_msgs
+        sensor_msgs
+        std_msgs
+        tello_interfaces
+    )
+    message(STATUS "Qt control panel native ROS 2 integration enabled")
+endif()
+
 if(TELLO_QT_WIDGETS_TARGET)
     add_executable(tello_control_panel
         apps/control_panel/main_qt.cpp
     )
-    target_link_libraries(tello_control_panel PRIVATE tello_core ${TELLO_QT_WIDGETS_TARGET})
+    target_link_libraries(tello_control_panel tello_core ${TELLO_QT_WIDGETS_TARGET})
+    if(TELLO_ROS_CONTROL_PANEL_DEPS)
+        target_compile_definitions(tello_control_panel PRIVATE TELLO_CONTROL_PANEL_ROS_NATIVE=1)
+        ament_target_dependencies(tello_control_panel ${TELLO_ROS_CONTROL_PANEL_DEPS})
+    endif()
 else()
     add_executable(tello_control_panel
         apps/control_panel/main.cpp

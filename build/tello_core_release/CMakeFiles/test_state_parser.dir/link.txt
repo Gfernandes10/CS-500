@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 CMakeFiles/test_state_parser.dir/tests/test_state_parser.cpp.o -o test_state_parser  libtello_core.a /usr/lib/x86_64-linux-gnu/libavformat.so /usr/lib/x86_64-linux-gnu/libavcodec.so /usr/lib/x86_64-linux-gnu/libavutil.so /usr/lib/x86_64-linux-gnu/libswscale.so 

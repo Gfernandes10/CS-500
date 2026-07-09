@@ -1,22 +1,22 @@
-# Development and Evaluation of a Modular C++ Communication, Control, and Visualization System for the DJI Tello Drone
+# Development and Evaluation of a Modular C++ Communication, Control, Visualization, and ROS Integration System for the DJI Tello Drone
 
 **Course:** CS 500 Project  
 **Student:** Gabriel Fernandes  
 **Supervisor:** Prof. Stefan Bruda  
 **Program Context:** Course-based M.Sc. project  
-**Status:** Draft report before ROS2 integration  
+**Status:** Draft report with ROS2 integration  
 
 ## Abstract
 
 This project develops and evaluates a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. The system is built around a reusable core library that implements UDP-based SDK command execution, telemetry parsing, FFmpeg-based video streaming, runtime metrics, recovery behavior, and safety-oriented RC control. On top of the core library, the project provides command-line tools and a Qt-based Control Panel for live video, telemetry visualization, CSV logging, manual commands, and configurable keyboard-based flight control.
 
-The implementation was evaluated using real-drone experiments covering command latency, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, power-cycle recovery, and Wi-Fi reconnect behavior. The final experiments show stable baseline command behavior, usable telemetry and video freshness, approximately 31-34 FPS FFmpeg video decoding, and measurable keyboard RC response across vertical, yaw, and attitude-proxy axes during flight. The current report documents the system before the planned ROS2 integration stage, which will expose the core library to robotics workflows through topics, services, and command inputs.
+The implementation was evaluated using real-drone experiments covering command latency, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, power-cycle recovery, and Wi-Fi reconnect behavior. The final experiments show stable baseline command behavior, usable telemetry and video freshness, approximately 31-34 FPS FFmpeg video decoding, and measurable keyboard RC response across vertical, yaw, and attitude-proxy axes during flight. The project also includes a ROS2 integration layer that exposes the core library to robotics workflows through topics, services, command inputs, video messages, and an aggregate link-quality state.
 
 ## 1. Introduction
 
 Small aerial robots are useful platforms for studying robotics software because they combine networking, telemetry, video streaming, control, safety, and user interaction in a compact system. The DJI Tello is especially suitable for a course project because it exposes a simple SDK over Wi-Fi while still presenting realistic engineering challenges: unreliable wireless links, UDP packet loss, command timeouts, asynchronous telemetry, video decoding, and safety-critical motion commands.
 
-The goal of this CS 500 project is to define and initially develop a graduate-level applied robotics software problem: a modular C++ communication and control stack for the DJI Tello drone. The project focuses on a reusable core library rather than a one-off script. The software is designed to support multiple clients, including command-line tools, a desktop Control Panel, and a future ROS2 bridge.
+The goal of this CS 500 project is to define and initially develop a graduate-level applied robotics software problem: a modular C++ communication and control stack for the DJI Tello drone. The project focuses on a reusable core library rather than a one-off script. The software is designed to support multiple clients, including command-line tools, a desktop Control Panel, and a ROS2 bridge.
 
 The main objectives are:
 
@@ -27,9 +27,11 @@ The main objectives are:
 5. build a desktop Control Panel for operation and data collection;
 6. implement configurable keyboard RC control with safety-oriented neutral behavior;
 7. evaluate the system using repeatable real-drone experiments;
-8. prepare the architecture for ROS2 integration.
+8. expose the system through a ROS2 integration layer.
 
 ## 2. DJI Tello SDK Background
+
+![DJI Tello drone used in this project](images/drone-tello.jpg)
 
 The DJI Tello SDK communicates over Wi-Fi using UDP. The host computer connects to the drone's Wi-Fi network and communicates with the drone at `192.168.10.1`. Three channels are central to this project:
 
@@ -42,6 +44,27 @@ The DJI Tello SDK communicates over Wi-Fi using UDP. The host computer connects 
 Before most SDK functionality is available, the host sends `command` to enter SDK mode. After that, command strings such as `battery?`, `takeoff`, `land`, `streamon`, and `streamoff` can be sent to the command port. Many SDK commands return a response such as `ok`, `error`, a numeric value, or no response before the client timeout expires. Because the protocol is UDP-based, software must be prepared for delayed, missing, or ambiguous responses.
 
 The telemetry stream is different from the command channel. Once the drone is in SDK mode, it periodically sends state packets to the host. These packets include fields such as attitude, velocity, height, time-of-flight distance, battery, barometer, and temperature. Telemetry is not requested one packet at a time; it is received asynchronously by a background receiver.
+
+The main telemetry fields used by this project are:
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `pitch` | pitch attitude | degrees |
+| `roll` | roll attitude | degrees |
+| `yaw` | yaw attitude | degrees |
+| `vgx` | velocity along the SDK x-axis | cm/s |
+| `vgy` | velocity along the SDK y-axis | cm/s |
+| `vgz` | velocity along the SDK z-axis | cm/s |
+| `templ` | lowest measured temperature | degrees Celsius |
+| `temph` | highest measured temperature | degrees Celsius |
+| `tof` | downward time-of-flight distance | cm |
+| `h` | SDK-reported height | cm |
+| `bat` | battery percentage | percent |
+| `baro` | barometer-derived altitude measurement | cm |
+| `time` | motor running time | seconds |
+| `agx` | acceleration along the SDK x-axis | `0.001g` |
+| `agy` | acceleration along the SDK y-axis | `0.001g` |
+| `agz` | acceleration along the SDK z-axis | `0.001g` |
 
 Three altitude-related fields are especially relevant for the flight analysis. `tof` is the time-of-flight distance in centimeters, measured by a downward distance sensor that estimates range from the time required for an emitted signal to reflect back to the drone. `h` is the SDK-reported height in centimeters. `baro` is a barometer-derived altitude measurement in centimeters, based on air pressure. In this project, `h` and `tof` are used to detect short vertical RC responses because they are easier to interpret over low-altitude indoor motion. `baro` is useful as a complementary trend signal but is not used alone for fine reaction-time estimates.
 
@@ -60,6 +83,10 @@ Each value is typically in the range `-100` to `100`. A neutral command, `rc 0 0
 
 The project is centered on a reusable C++ core library that contains the drone-specific communication and processing logic. Applications such as the CLI tools and Qt Control Panel depend on this library instead of duplicating SDK, telemetry, video, and recovery behavior.
 
+![System architecture overview](images/system_architecture.svg)
+
+The diagram shows the main project boundary: the drone communicates over the SDK UDP channels, `tello_core` owns the reusable communication and processing logic, and each client uses that same core layer instead of reimplementing drone-specific behavior.
+
 The main components are:
 
 - `UdpSocket`: low-level UDP send/receive abstraction.
@@ -72,17 +99,17 @@ The main components are:
 - CLI applications: smoke commands, command watch, state watch, and video watch.
 - Qt Control Panel: graphical operation, visualization, keyboard control, and CSV export.
 
-The architecture separates transport, parsing, client state, metrics, and user interface. This keeps the codebase suitable for later ROS2 integration, where the ROS layer should wrap the core library rather than reimplementing the command, telemetry, and video logic.
+The architecture separates transport, parsing, client state, metrics, and user interface. This also supports ROS2 integration, where the ROS layer wraps the core library instead of reimplementing the command, telemetry, video, and safety logic.
 
 ## 4. Implementation
 
 ### 4.1 Command Channel
 
-The command channel uses UDP to send SDK commands to the drone and wait for responses. Reliability is handled in layers. `UdpSocket` provides transport operations and timeout handling. `CommandExecutor` handles command execution policy, including retry and timeout behavior. `TelloClient` owns higher-level SDK state and exposes methods such as SDK entry, takeoff, land, stream control, keepalive, and recovery.
+The command channel uses UDP to send SDK commands to the drone and wait for responses for synchronous SDK operations. Reliability is handled in layers. `UdpSocket` provides transport operations and timeout handling. `CommandExecutor` handles command execution policy, including retry and timeout behavior. `TelloClient` owns higher-level SDK state and exposes methods such as SDK entry, takeoff, land, stream control, keepalive, and recovery. 
 
-The client tracks connection state through connected, recovering, and disconnected states. It also exposes connection events such as lost, restored, and transient loss recovered, which are useful for experiments and logging. A keepalive loop can periodically send `battery?` queries to keep the SDK session active when no RC stream is running.
+The client tracks connection state through connected, recovering, and disconnected states. It also exposes connection events such as lost, restored, and transient loss recovered, which are useful for experiments and logging. A keepalive loop can periodically send `battery?` queries to keep the SDK session active when no RC stream is running. This is necessary because the Tello SDK states that if the drone receives no command for 15 seconds, it automatically lands. During idle experiments, periodic lightweight commands prevent the drone from treating the session as inactive while avoiding unnecessary motion commands.
 
-Several command-channel details were refined during real-drone testing. Critical commands such as `takeoff` and `land` are protected by preflight neutral RC behavior. RC commands use a non-blocking path where appropriate so that they do not wait behind slow query commands. In the Qt Control Panel, blocking critical commands and stream-control commands are dispatched through a background command worker; the GUI receives the final result through a queued callback and remains responsive while the command is waiting for an SDK response or timeout. Metrics include command latency, failures, command mutex wait time, command source, raw attempt logs, internal attempt logs, recovery timing, and connection state.
+Several command-channel details were refined during real-drone testing. Critical commands such as `takeoff` and `land` are protected by preflight neutral RC behavior. RC commands use a no-wait path so continuous control does not wait behind slow query commands. In the Qt Control Panel, blocking critical commands and stream-control commands are dispatched through a background command worker; the GUI receives the final result through a queued callback and remains responsive while the command is waiting for an SDK response or timeout. Metrics include command latency, failures, command mutex wait time, command source, raw attempt logs, internal attempt logs, recovery timing, and connection state.
 
 An important refinement was the distinction between a real connection loss and a transient command outage that recovers inside the same high-level API call. Earlier logs could report `LOST` as soon as one internal SDK command attempt timed out, even if retry or recovery succeeded and the public API call returned `OK`. The client now records the full `command_internal_attempt_log`, including all executor calls and recovery calls made inside one high-level command. If at least one internal attempt failed but the final command result is `OK`, the event is classified as `TRANSIENT_LOSS_RECOVERED` instead of a persistent loss. This produces a more accurate operator and experiment log.
 
@@ -175,75 +202,281 @@ Keyboard RC control was implemented using configurable control profiles. A profi
 
 The initial concern during flight testing was that GUI stalls could cause a movement command to remain active after the user released the key. To mitigate this, RC sending was moved into a dedicated worker. The GUI updates a desired RC state, while the worker sends RC commands at a fixed cadence. If input becomes stale, the worker sends neutral RC. This design reduces coupling between GUI event-loop responsiveness and drone motion safety.
 
+### 4.7 ROS2 Integration
+
+ROS, the Robot Operating System, is a common middleware framework used in robotics to connect sensors, controllers, planning algorithms, visualization tools, and hardware drivers. Despite its name, ROS is not an operating system in the traditional kernel sense. It provides conventions and libraries for building distributed robot software. In ROS2, independent processes called nodes communicate through typed topics, request/response services, actions, parameters, launch files, and a DDS-based discovery and transport layer. A typical robotics system uses a hardware driver node to publish sensor data and accept commands, while other nodes perform mapping, planning, control, visualization, or logging. Tools such as `ros2 topic echo`, `ros2 service call`, `rqt`, and RViz are then used to inspect and interact with the running graph.
+
+The project now includes a separate ROS2 Jazzy integration workspace. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
+
+The ROS workspace is organized into four packages:
+
+1. `tello_core_vendor`, which finds or installs the fixed `tello_core` runtime release;
+2. `tello_interfaces`, which defines Tello-specific messages and services;
+3. `tello_driver`, which implements the broker node that owns the drone command channel;
+4. `tello_bringup`, which provides launch files for starting the driver and GUI together.
+
+The dependency on the CS 500 core repository is therefore release-based rather than source-tree-based. The ROS workspace does not need to clone or carry the full academic repository. During development, the vendor package can consume a local release artifact:
+
+```bash
+colcon build --cmake-clean-cache --cmake-args \
+  -DTELLO_CORE_VERSION=1.0.0 \
+  -DTELLO_CORE_VENDOR_FORCE_DOWNLOAD=ON \
+  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core-1.0.0-Linux-x86_64.tar.gz
+```
+
+For a published GitHub release, the same package can construct the artifact URL from a version and base release path:
+
+```bash
+colcon build --cmake-args \
+  -DTELLO_CORE_VERSION=1.0.0 \
+  -DTELLO_CORE_RELEASE_BASE_URL=https://github.com/Gfernandes10/CS-500/releases/download
+```
+
+After the ROS workspace is built, the application is launched by sourcing ROS2 Jazzy and the workspace install tree, then running the bringup launch file:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch tello_bringup control_panel.launch.py
+```
+
+This starts both `/tello/tello_driver_node` and the Qt Control Panel in ROS mode. The graph can be inspected with standard ROS tools:
+
+```bash
+ros2 node list
+ros2 topic list
+ros2 service list
+ros2 topic echo /tello/link_quality
+```
+
+The central ROS node is `tello_driver_node`. It is the only ROS-mode process that owns the `TelloClient` and therefore the only process that talks directly to the drone command UDP socket. This ownership model avoids conflicting command senders. The node subscribes to `/tello/cmd_vel` using `geometry_msgs/Twist`, clamps normalized command values to `[-1.0, 1.0]`, scales them to SDK RC values in `[-100, 100]`, and maps them to the Tello command `rc a b c d` as follows: `linear.y` to left/right, `linear.x` to forward/back, `linear.z` to up/down, and `angular.z` to yaw.
+
+The ROS interface is summarized below so that the delivered bridge can be inspected with standard ROS tools.
+
+| Interface | Direction | Type | Purpose |
+|---|---|---|---|
+| `/tello/state` | published by driver | `tello_interfaces/msg/TelloState` | structured telemetry from the SDK state channel |
+| `/tello/battery` | published by driver | `std_msgs/msg/Int32` | convenience battery percentage topic |
+| `/tello/connection_state` | published by driver | `std_msgs/msg/String` | SDK connection state for operators and tools |
+| `/tello/link_quality` | published by driver | `tello_interfaces/msg/LinkQuality` | aggregate communication-quality and RC-safety state |
+| `/tello/video/image_raw` | published by driver | `sensor_msgs/msg/Image` | decoded FFmpeg video frames |
+| `/tello/diagnostics` | published by driver | `diagnostic_msgs/msg/DiagnosticArray` | diagnostic status for ROS tooling |
+| `/tello/cmd_vel` | subscribed by driver | `geometry_msgs/msg/Twist` | normalized autonomous velocity command input |
+| `/tello/manual_cmd_vel` | published by Control Panel in ROS mode | `geometry_msgs/msg/Twist` | manual RC input forwarded through the ROS command owner |
+
+The main services exposed by the driver are:
+
+| Service | Type | Purpose |
+|---|---|---|
+| `/tello/connect` | `std_srvs/srv/Trigger` | initialize the core client and enter SDK mode |
+| `/tello/disconnect` | `std_srvs/srv/Trigger` | stop operation and release the SDK session |
+| `/tello/takeoff` | `std_srvs/srv/Trigger` | request takeoff through the ROS command owner |
+| `/tello/land` | `std_srvs/srv/Trigger` | request landing through the ROS command owner |
+| `/tello/emergency` | `std_srvs/srv/Trigger` | request emergency motor stop |
+| `/tello/streamon` | `std_srvs/srv/Trigger` | enable video streaming |
+| `/tello/streamoff` | `std_srvs/srv/Trigger` | disable video streaming |
+| `/tello/enable_autonomy` | `std_srvs/srv/Trigger` | allow `/tello/cmd_vel` to control the drone |
+| `/tello/disable_autonomy` | `std_srvs/srv/Trigger` | block autonomous command input |
+| `/tello/gui_command` | `tello_interfaces/srv/Command` | forward a GUI-requested SDK command through the broker |
+
+The link-quality topic exposes the same aggregate safety-oriented state introduced in the core metrics layer. It includes the overall label, numeric score, `safe_for_nonzero_rc`, reason text, telemetry/video/command/RC sublabels, and RC cadence diagnostics. This makes communication health visible to future ROS controllers rather than only to the Qt Control Panel or CSV logs.
+
+The driver also exposes services for connect, disconnect, takeoff, land, emergency, stream on, stream off, enabling autonomy, disabling autonomy, and forwarding GUI commands. Command arbitration is deliberately conservative. `/tello/cmd_vel` is accepted only when autonomy is explicitly enabled. Commands originating from the GUI or manual services switch the driver into manual override, block `/tello/cmd_vel`, and execute the requested GUI or service command through the broker. Discrete critical commands such as takeoff, land, emergency, stream on, and stream off can preempt autonomous command flow. Manual RC commands from the GUI are forwarded directly as RC commands and continue to block autonomous `/cmd_vel` until autonomy is explicitly re-enabled. The emergency service has highest priority.
+
+The Qt Control Panel is preserved as the main graphical application. In standalone mode it can still communicate directly with the drone for development. In ROS mode it is launched with `tello_control_panel --ros-mode` and sends requests through ROS services instead of owning the UDP command channel. The launch file `control_panel.launch.py` starts both the broker node and the GUI, producing a single user-facing control panel while keeping command ownership inside ROS.
+
+### 4.8 Standalone Build And Operation
+
+The core API can also be used without ROS. In standalone mode, the CLI tools and Qt Control Panel link directly against `tello_core` and communicate with the drone through the SDK UDP channels. This is the mode used for the real-drone experiments in this report.
+
+For users who want to consume the API as a dependency, the preferred distribution path is the versioned release artifact rather than a direct build from the academic source tree. A release contains only the runtime-facing files: public headers, the compiled library, CMake package metadata, runtime resources, and the CLI/Control Panel executables. This allows another C++ or ROS project to depend on a fixed `tello_core` version without copying documentation, notebooks, experiment results, or planning files.
+
+A user can obtain a specific version from the project releases page. For example, version `1.0.0` can be downloaded and extracted as follows:
+
+```bash
+mkdir -p $HOME/tello_core_releases
+curl -L \
+  -o /tmp/tello_core-1.0.0-Linux-x86_64.tar.gz \
+  https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core-1.0.0-Linux-x86_64.tar.gz
+tar -xzf /tmp/tello_core-1.0.0-Linux-x86_64.tar.gz \
+  -C $HOME/tello_core_releases
+```
+
+After extraction, the release directory can be used as an installation prefix:
+
+```bash
+export TELLO_CORE_PREFIX=$HOME/tello_core_releases/tello_core-1.0.0-Linux-x86_64
+export PATH=$TELLO_CORE_PREFIX/bin:$PATH
+export CMAKE_PREFIX_PATH=$TELLO_CORE_PREFIX:$CMAKE_PREFIX_PATH
+```
+
+The command-line tool and Control Panel can then be launched directly from the versioned release:
+
+```bash
+tello_cli --once
+tello_control_panel
+```
+
+A downstream CMake project can consume an installed or extracted release through the exported package:
+
+```cmake
+find_package(tello_core REQUIRED)
+target_link_libraries(my_app PRIVATE tello_core::tello_core)
+```
+
+The source-based standalone workflow remains useful for development, auditing, project evaluation, or rebuilding on a different machine. In that case, clone the repository:
+
+```bash
+git clone https://github.com/Gfernandes10/CS-500.git
+cd CS-500
+```
+
+On Ubuntu or Debian, install the required development packages:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential \
+  cmake \
+  pkg-config \
+  libavformat-dev \
+  libavcodec-dev \
+  libavutil-dev \
+  libswscale-dev \
+  qtbase5-dev
+```
+
+FFmpeg is required because the project supports only the FFmpeg Stream video path. Qt is required for the graphical Control Panel. OpenCV is optional and is not the primary video runtime path:
+
+```bash
+sudo apt install -y libopencv-dev
+```
+
+Build the standalone core, CLI, and Control Panel:
+
+```bash
+cmake -S tello_core -B build/tello_core_standalone
+
+cmake --build build/tello_core_standalone
+```
+
+Prebuilt binaries are not assumed to be portable across machines because they depend on the Linux distribution, CPU architecture, compiler, FFmpeg, Qt, and runtime library versions. For distribution, prebuilt binaries should be published separately as release artifacts rather than committed directly to the source repository.
+
+The offline tests can be run without a drone:
+
+```bash
+ctest --test-dir build/tello_core_standalone \
+  -L offline \
+  --output-on-failure
+```
+
+For a basic hardware check, power on the Tello, connect the computer to the Tello Wi-Fi network, wait about 10-15 seconds after power-on, and run:
+
+```bash
+./build/tello_core_standalone/tello_cli --once
+```
+
+For the standalone graphical application, run:
+
+```bash
+./build/tello_core_standalone/tello_control_panel
+```
+
+The normal standalone Control Panel workflow is:
+
+1. power on the drone;
+2. connect the computer to the Tello Wi-Fi network;
+3. start `tello_control_panel`;
+4. press `Connect + SDK`;
+5. confirm that telemetry, battery, temperature, link quality, and video status update;
+6. configure CSV export paths if experiment logging is needed;
+7. use the Config tab for SDK commands, speed setting, and keyboard profile setup;
+8. use the Operation tab for live video, state history, manual RC sliders, and keyboard RC control.
+
+In standalone mode the Control Panel owns the command channel directly. If ROS mode is required, the Control Panel should instead be launched through the ROS bringup flow so that the ROS driver node owns the command channel.
+
 ## 5. Milestone Plan Traceability
 
-The original milestone plan divided the project into eight phases. This section summarizes each planned phase and the delivered work.
+The original milestone plan divided the project into eight phases. This section maps each planned phase to the delivered implementation, the evidence currently available in the report, and any remaining evidence that should be added before the final submission.
 
 ### 5.1 Phase 0: Project Definition and Architecture
 
-The planned goal for Phase 0 was to define the project scope, study the DJI Tello SDK, choose technologies, create the source structure, define the core modules, and establish the CMake build system.
+**Planned goal.** Phase 0 was intended to define the project scope, study the DJI Tello SDK, choose technologies, create the source structure, define the core modules, and establish the CMake build system.
 
-This phase was delivered. The project scope was defined around a modular C++ Tello communication stack. The architecture separates command, telemetry, video, metrics, GUI, and future ROS integration. The source tree was organized around a reusable core library, CLI applications, tests, documentation, and a placeholder ROS area. CMake and C++17 were adopted.
+**Delivered work.** This phase was delivered. The project scope was defined around a modular C++ Tello communication stack. The architecture separates command, telemetry, video, metrics, GUI, and ROS integration. The implementation uses C++17, CMake, FFmpeg, Qt, and ROS2 Jazzy. The actual source organization evolved from the initial conceptual folders into a reusable `tello_core` package plus a separate ROS2 workspace that consumes a packaged runtime artifact. This preserves the planned modular boundary while keeping academic material, experiments, and reports outside the ROS runtime package.
 
-The architecture is documented textually in this report.
+**Evidence included.** The SDK background, system architecture, component descriptions, and implementation sections document the final structure and design decisions. Section 3 includes the final system architecture diagram, showing the DJI Tello drone, UDP command/telemetry/video channels, the reusable `tello_core` layer, CLI tools, Qt Control Panel, metrics layer, and ROS2 bridge.
 
 ### 5.2 Phase 1: Core Networking and Command Layer
 
-The planned goal for Phase 1 was to implement UDP communication, command execution, timeout and retry behavior, logging, and a CLI tool for command testing.
+**Planned goal.** Phase 1 was intended to implement UDP communication, command execution, timeout and retry behavior, logging, and a CLI tool for command testing.
 
-This phase was delivered. `UdpSocket`, `CommandExecutor`, and `TelloClient` implement the command channel. The CLI supports one-shot commands, command watching, SDK initialization, keepalive, command metrics, and recovery state reporting. Logging is integrated through a console logger and GUI log export.
+**Delivered work.** This phase was delivered. `UdpSocket`, `CommandExecutor`, and `TelloClient` implement the command channel. The command socket was refined to use the SDK command port consistently and avoid ambiguous response ownership. The CLI supports one-shot commands, command watching, SDK initialization, keepalive, command metrics, and recovery state reporting. Logging is integrated through a console logger and GUI log export.
 
-The command experiments validate this phase with real-drone measurements of command latency and failure behavior.
+**Evidence included.** The smoke test and command baseline in the experimental results section validate this phase with real-drone command latency, timeout, retry, and transient-recovery measurements. The packet-capture discussion provides additional evidence that periodic command delays were transport/drone-response events rather than local API parsing or GUI blocking.
 
 ### 5.3 Phase 2: Telemetry System
 
-The planned goal for Phase 2 was to implement continuous telemetry reception, parse raw state messages into structured data, provide thread-safe access, and record telemetry logs.
+**Planned goal.** Phase 2 was intended to implement continuous telemetry reception, parse raw state messages into structured data, provide thread-safe access, and record telemetry logs.
 
-This phase was delivered. `StateParser` converts raw SDK state strings into structured telemetry. `StateReceiver` runs a background receiver, stores the latest state, buffers recent history, records state CSV data, and exposes thread-safe access to consumers.
+**Delivered work.** This phase was delivered. `StateParser` converts raw SDK state strings into structured telemetry. `StateReceiver` runs a background receiver, stores the latest state, buffers recent history, records state CSV data, and exposes thread-safe access to consumers.
 
-Telemetry experiments validate packet freshness, packet age, interarrival gaps, and state recording. Unit tests also validate the parser behavior.
+**Evidence included.** The telemetry baseline, GUI baseline, and keyboard-flight runs validate packet freshness, packet age, interarrival gaps, state recording, and quality labels. Parser behavior is also covered by unit tests.
+
 
 ### 5.4 Phase 3: Video Stream Integration
 
-The planned goal for Phase 3 was to receive, decode, and expose the drone video stream, including a minimal viewer or frame access path.
+**Planned goal.** Phase 3 was intended to receive, decode, and expose the drone video stream, including a minimal viewer or frame access path.
 
-This phase was delivered with a design refinement. The final video implementation uses `VideoStreamReaderFfmpeg`, which opens the Tello H264 UDP stream directly through FFmpeg, decodes frames, converts them to RGB, and feeds both CLI metrics and the Qt Control Panel. This replaced the initial idea of maintaining a custom packet/NAL pipeline because FFmpeg Stream produced smoother real-flight video and reduced implementation risk.
+**Delivered work.** This phase was delivered with a design refinement. The final video implementation uses `VideoStreamReaderFfmpeg`, which opens the Tello H264 UDP stream directly through FFmpeg, decodes frames, converts them to RGB, and feeds both CLI metrics and the Qt Control Panel. FFmpeg Stream became the only supported video runtime path because it produced smoother real-flight video and reduced implementation risk.
 
-The final project intentionally supports only FFmpeg Stream as the video runtime path. Video experiments validate decoded frame rate, frame freshness, and GUI display behavior.
+**Evidence included.** The video baseline, GUI idle run, and keyboard-flight run validate decoded frame rate, video freshness, decoder stability, and GUI display behavior.
+
+**Evidence still to add.** Include a representative Control Panel video screenshot or short demo clip reference in the presentation material.
 
 ### 5.5 Phase 4: Evaluation and Metrics
 
-The planned goal for Phase 4 was to add command latency, telemetry rate, video FPS, timestamp logging, metadata-ready CSV exports, experiments, plots, and performance analysis.
+**Planned goal.** Phase 4 was intended to add command latency, telemetry rate, video FPS, timestamp logging, metadata-ready CSV exports, experiments, plots, and performance analysis.
 
-This phase was delivered and became one of the central contributions of the project. `MetricsCollector` centralizes command, telemetry, video, GUI, keepalive, recovery, and RC metrics. Experiments record metadata such as test ID, scenario, notes, and run mode.
+**Delivered work.** This phase was delivered and became one of the central contributions of the project. `MetricsCollector` centralizes command, telemetry, video, GUI, keepalive, recovery, link-quality, and RC metrics. Experiments record metadata such as test ID, scenario, notes, and run mode.
 
-The final experiment set covers command behavior, telemetry continuity, FFmpeg video, GUI operation, keyboard RC flight, power-cycle recovery, and Wi-Fi reconnect behavior. The Results section includes plots and quantitative summaries generated from these experiments.
+**Evidence included.** The final experiment set covers command behavior, telemetry continuity, FFmpeg video, GUI operation, keyboard RC flight, power-cycle recovery, and Wi-Fi reconnect behavior. The Results section includes plots and quantitative summaries generated from these experiments.
+
+**Evidence still to add.** Add a short final note in the appendix identifying the exact final experiment files used for the figures, if the final PDF needs reproducibility traceability.
 
 ### 5.6 Phase 5: ROS Integration
 
-The planned goal for Phase 5 was to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools.
+**Planned goal.** Phase 5 was intended to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools. The plan named ROS2 Humble or a compatible ROS2 version; the delivered implementation uses ROS2 Jazzy.
 
-This phase is not delivered yet. The current contribution toward this milestone is architectural readiness: the core library was designed so a ROS2 bridge can reuse command, telemetry, video, safety, and recovery logic without duplicating it. A placeholder ROS area exists, and the intended bridge design is described in the Future Work section.
+**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, notebooks, experiment results, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
 
-This is the main remaining planned technical milestone.
+The delivered driver node wraps the existing core library and publishes telemetry, battery, connection state, video frames, diagnostics, and aggregate link quality. It subscribes to normalized velocity commands on `/tello/cmd_vel`, converts them to Tello RC commands, and exposes services for connection management, takeoff, landing, emergency stop, stream control, autonomy enable/disable, and GUI command forwarding. The Qt Control Panel can be launched in ROS mode so that the GUI sends commands through the ROS broker instead of talking directly to the drone. Offline build and interface tests were performed with `colcon build`, `colcon test`, and ROS command-line tools.
+
+**Evidence included.** The ROS2 Integration section lists the delivered packages, topics, services, launch flow, command ownership model, and command arbitration policy.
+
+**Evidence still to add.** Add the final `colcon build` and `colcon test` summaries. If possible, also add one ROS graph inspection transcript, such as `ros2 node list`, `ros2 topic list`, `ros2 service list`, and a sample `/tello/link_quality` echo. End-to-end real-drone validation of the ROS launch path remains future work unless a final ROS hardware test is completed.
 
 ### 5.7 Phase 6: Desktop GUI
 
-The planned goal for Phase 6 was to build a simple Qt GUI with video, telemetry display, control buttons, and integration with the core library.
+**Planned goal.** Phase 6 was intended to build a simple Qt GUI with video, telemetry display, control buttons, and integration with the core library.
 
-This phase was delivered with expanded scope. The Qt Control Panel includes SDK connection, FFmpeg video, telemetry plotting, state history, CSV export, logging, takeoff confirmation, emergency behavior on exit, keyboard profiles, RC sliders, a dedicated keyboard RC worker, an asynchronous command worker for blocking critical commands, and runtime diagnostics.
+**Delivered work.** This phase was delivered with expanded scope. The Qt Control Panel includes SDK connection, FFmpeg video, telemetry plotting, state history, CSV export, logging, takeoff confirmation, emergency behavior on exit, keyboard profiles, RC sliders, a dedicated keyboard RC worker, an asynchronous command worker for blocking critical commands, runtime diagnostics, persistent CSV paths, aggregate link-quality status, battery, Wi-Fi, temperature, and recording indicators.
 
-The GUI experiments validate that the Control Panel can display video and telemetry while logging metrics, and the keyboard flight experiment validates its use during real drone operation.
+**Evidence included.** The GUI screenshots describe the delivered interface. The GUI idle and keyboard-flight experiments validate that the Control Panel can display video and telemetry while logging metrics, and that it can be used during real drone operation.
+
+**Evidence still to add.** Add numbered annotations to the GUI screenshots so the visual labels match the feature descriptions in this report.
 
 ### 5.8 Phase 7: Final Report and Presentation
 
-The planned goal for Phase 7 was to produce the final technical report, presentation slides, and a live or recorded demo.
+**Planned goal.** Phase 7 was intended to produce the final technical report, presentation slides, and a live or recorded demo.
 
-This phase is partially delivered. This draft report documents the architecture, SDK background, implementation, experiments, results, limitations, and milestone traceability. Figures and experiment summaries are included for the final PDF.
+**Delivered work.** This phase is partially delivered. This draft report documents the architecture, SDK background, implementation, experiments, results, limitations, and milestone traceability. Figures and experiment summaries are included for the final PDF.
 
-The remaining work for this phase is to finalize the written report, prepare presentation slides, and prepare the final demo material.
+**Evidence included.** The report already includes the major sections required for a technical project submission: problem definition, implementation, experiment methodology, results, discussion, limitations, and future work.
 
-The only major planned technical component not yet implemented is the ROS2 bridge from Phase 5. The final report and presentation work from Phase 7 is also still in progress. All other implementation phases have been delivered, and several were expanded based on real-drone testing, especially metrics, recovery, GUI diagnostics, and keyboard RC safety.
+**Evidence still to add.** The remaining work is to finalize the written report, prepare presentation slides, add the final architecture diagram, annotate GUI screenshots, and prepare live or recorded demo material.
+
+All major planned technical components have been delivered at least to an initial functional level. Several phases were expanded based on real-drone testing, especially metrics, recovery, GUI diagnostics, keyboard RC safety, link-quality monitoring, and ROS command arbitration. The main remaining technical validation work is end-to-end real-drone testing of the ROS launch path and any future closed-loop controller that consumes the ROS interface.
 
 ## 6. Experimental Methodology
 
@@ -292,7 +525,7 @@ The video baseline measures FFmpeg Stream behavior without Qt display overhead. 
 
 ### 6.5 E5-GUI-VID-IDLE: Control Panel Stationary Baseline
 
-The stationary GUI baseline measures the final Control Panel under normal non-flight operation. The operator launches the panel, connects SDK mode, configures GUI metrics and state CSV export, starts recording, starts FFmpeg video, leaves the drone stationary for approximately 2-3 minutes, then stops video, stops recording, and exports the CSV files. This run exercises telemetry display, FFmpeg video display, GUI timers, logging, state recording, and CSV export. The main metrics are telemetry/video quality, decoder FPS, GUI vision tick delay, state/plot tick delay, vision refresh duration, plot paint time, command mutex wait time, and state recording gaps.
+The stationary GUI baseline measures the final Control Panel under normal non-flight operation. The operator launches the panel, connects SDK mode, configures GUI metrics and state CSV export, starts recording, confirms that FFmpeg video is active after connection, leaves the drone stationary for approximately 2-3 minutes, then stops video if needed, stops recording, and exports the CSV files. This run exercises telemetry display, FFmpeg video display, GUI timers, logging, state recording, and CSV export. The main metrics are telemetry/video quality, decoder FPS, GUI vision tick delay, state/plot tick delay, vision refresh duration, plot paint time, command mutex wait time, and state recording gaps.
 
 ### 6.6 E6-KBD-PROFILE: Keyboard Profile Validation
 
@@ -300,7 +533,7 @@ The keyboard profile validation is a no-flight experiment. The operator creates 
 
 ### 6.7 E7-KBD-RESPONSE: Keyboard RC Safety And Flight Response
 
-The keyboard flight test is the main real-operation experiment. The operator starts the Control Panel, connects SDK mode, starts GUI and state recording, starts FFmpeg video, confirms the keyboard profile and aggression, performs takeoff, enables keyboard control, executes short RC pulses, disables keyboard control, lands, stops video, and exports the recordings. The commanded pulses include short up/down and yaw movements, with optional forward/back and left/right pulses only if the space is safe.
+The keyboard flight test is the main real-operation experiment. The operator starts the Control Panel, connects SDK mode, starts GUI and state recording, confirms that FFmpeg video is active, confirms the keyboard profile and aggression, performs takeoff, enables keyboard control, executes short RC pulses, disables keyboard control, lands, stops video if needed, and exports the recordings. The commanded pulses include short up/down and yaw movements, with optional forward/back and left/right pulses only if the space is safe.
 
 This experiment sends `command`, `streamon`, `takeoff`, repeated keyboard-generated `rc a b c d`, neutral `rc 0 0 0 0` when no mapped key is pressed, `land`, and `streamoff`. It evaluates whether RC commands are sent at a safe cadence, whether RC returns to neutral after key release, whether the drone responds physically in telemetry, and whether telemetry/video remain fresh while the drone is airborne. The main evidence comes from RC channel logs, RC timestamps, height and time-of-flight response, yaw response, telemetry quality, video quality, decoder FPS, GUI timing, and command mutex wait time.
 
@@ -431,9 +664,9 @@ The most important implementation decision in the video subsystem was standardiz
 
 Keyboard RC control required special attention because control commands can be safety-critical. The dedicated RC worker reduces the risk that GUI event-loop stalls keep a movement command active longer than intended. The repeated flight experiment showed that RC commands were recorded, non-zero commands were sent, the drone responded physically, and telemetry/video remained `OK`. The strongest physical response evidence came from vertical height/time-of-flight changes and yaw changes; lateral and forward/backward response was visible through attitude proxies.
 
-The command-channel packet-capture diagnosis also has implications for RC control. Query commands such as `battery?` wait for a response, so a delayed or missing UDP response appears as a timeout, retry, or recovered transient outage. RC commands are different: they are sent continuously through a no-wait path and are not acknowledged by the API on every packet. A single lost RC packet is usually harmless because the dedicated worker sends another RC command shortly afterward. A longer UDP outage is more important. If the last RC command received by the drone was nonzero and neutral `rc 0 0 0 0` packets are delayed or lost, the drone may continue the previous motion until it receives a newer RC command. This is why the implementation emphasizes an independent RC worker, repeated neutral output when no input is active, stale-input detection, and high-priority neutral RC before critical commands. Future closed-loop control should treat command-channel freshness as a safety signal, not only as a logging metric.
+The command-channel packet-capture diagnosis also has implications for RC control. Query commands such as `battery?` wait for a response, so a delayed or missing UDP response appears as a timeout, retry, or recovered transient outage. RC commands are different: they are sent continuously through a no-wait path. A single lost RC packet is usually harmless because the dedicated worker sends another RC command shortly afterward. A longer UDP outage is more important. If the last RC command received by the drone was nonzero and neutral `rc 0 0 0 0` packets are delayed or lost, the drone may continue the previous motion until it receives a newer RC command. This is why the implementation emphasizes an independent RC worker, repeated neutral output when no input is active, stale-input detection, and high-priority neutral RC before critical commands. Future closed-loop control should treat command-channel freshness as a safety signal, not only as a logging metric.
 
-To support this, the core metrics layer now exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the same signal can be exposed later through ROS.
+To support this, the core metrics layer now exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the ROS driver publishes the same signal as `/tello/link_quality`.
 
 For closed-loop control, this link-quality signal should be treated as a gating input. When quality is `OK`, normal command output can proceed. When quality is `DEGRADED`, a controller should consider reducing command magnitude, increasing neutral-command repetition, or holding the previous safe setpoint only briefly. When quality becomes `STALE` or `BLACKOUT`, the controller should avoid sustained nonzero RC and should prefer neutral RC, hover, landing, or emergency behavior depending on the flight context. The important point is that communication health becomes part of the control decision rather than only a post-run diagnostic.
 
@@ -449,31 +682,31 @@ The project has several limitations:
 2. Wi-Fi conditions are environment-dependent and may vary across rooms, laptops, and drivers.
 3. The RC reaction latency estimate is based on onboard telemetry, not external motion capture. Lateral and forward/backward response estimates use attitude proxies because direct SDK translational velocity fields did not provide reliable movement evidence in the repeated keyboard-flight run.
 4. The current system does not implement a closed-loop controller.
-5. The ROS2 bridge is not implemented yet.
+5. The ROS2 bridge has been implemented and built, but it has not yet been evaluated with the same level of real-drone experimental coverage as the CLI and Qt Control Panel paths.
 6. Some command responses, especially around `takeoff` and `land`, can be delayed or time out even when the drone physically executes the action. The GUI no longer waits for these responses on the main event loop, but the underlying SDK ambiguity remains.
 7. Thermal behavior can affect long back-to-back experiments.
 
-## 10. Future Work: ROS2 Integration Placeholder
+## 10. Future Work: ROS2 Validation and Closed-Loop Control
 
-The next planned stage is ROS2 integration. The intended design is to create a thin ROS2 bridge that reuses the core C++ library rather than duplicating command, telemetry, video, or recovery logic.
+The ROS2 integration is now implemented as a thin bridge that reuses the core C++ library rather than duplicating command, telemetry, video, or recovery logic. The next stage is to validate this bridge under real-drone operation and use it as the interface for future robotics experiments.
 
-The planned ROS2 package should:
+Future ROS2 work should:
 
-1. wrap the existing drone client, telemetry receiver, and video access;
-2. publish telemetry topics;
-3. publish camera frames if feasible;
-4. subscribe to velocity or RC command inputs;
-5. publish aggregate link quality and the `safe_for_nonzero_rc` control hint;
-6. expose takeoff, land, and emergency services;
-7. preserve the existing safety behavior around neutral RC and critical commands.
+1. run end-to-end drone tests using `ros2 launch tello_bringup control_panel.launch.py`;
+2. validate `/tello/cmd_vel` RC mapping against observed drone behavior;
+3. confirm that GUI manual override blocks autonomous `/cmd_vel` until autonomy is explicitly re-enabled;
+4. validate `/tello/link_quality` during telemetry gaps, command timeouts, and RC operation;
+5. test video publication through `/tello/video/image_raw` with ROS visualization or recording tools;
+6. integrate a small external autonomy node that publishes normalized `/tello/cmd_vel`;
+7. use `safe_for_nonzero_rc` as a gating input for any future closed-loop controller.
 
-This future work will make the project usable from standard robotics tools and provide a bridge toward future closed-loop control experiments.
+This future work will move the system from an implemented ROS driver toward a tested robotics platform suitable for future closed-loop control experiments.
 
 ## 11. Conclusion
 
-This project produced a modular C++ communication, telemetry, video, metrics, and control system for the DJI Tello drone. The system includes a reusable core library, command-line tools, a Qt Control Panel, FFmpeg-based video display, CSV experiment logging, and configurable keyboard RC control.
+This project produced a modular C++ communication, telemetry, video, metrics, control, and ROS integration system for the DJI Tello drone. The system includes a reusable core library, command-line tools, a Qt Control Panel, FFmpeg-based video display, CSV experiment logging, configurable keyboard RC control, and a ROS2 bridge.
 
-Real-drone experiments validated the main engineering claims. The command channel was reliable in the baseline run, telemetry and video freshness remained healthy in core scenarios, FFmpeg Stream provided practical live video performance, keyboard RC control worked during flight, and recovery was demonstrated after a drone power-cycle. The project is now ready for the next phase: ROS2 integration and final report refinement.
+Real-drone experiments validated the main engineering claims. The command channel was reliable in the baseline run, telemetry and video freshness remained healthy in core scenarios, FFmpeg Stream provided practical live video performance, keyboard RC control worked during flight, and recovery was demonstrated after a drone power-cycle. The project is now ready for final report refinement and deeper ROS2 validation with external autonomy nodes.
 
 ## Appendix A: DJI Tello SDK Command Summary
 
@@ -512,3 +745,22 @@ Real-drone experiments validated the main engineering claims. The command channe
 ## Appendix C: Build Environment Notes
 
 The project uses CMake and C++17. Video support requires FFmpeg development packages for `libavformat`, `libavcodec`, `libavutil`, and `libswscale`. FFmpeg is a required dependency for the video-enabled build because the project supports only the FFmpeg Stream video path.
+
+## Appendix D: Offline Tests
+
+The current offline test suite can be executed without a connected drone:
+
+```bash
+ctest --test-dir build/tello_core_standalone \
+  -L offline \
+  --output-on-failure
+```
+
+The existing offline tests are:
+
+| Test | Purpose |
+|---|---|
+| `unit_state_parser` | validates parsing of Tello SDK telemetry state packets into structured state fields |
+| `unit_metrics_collector` | validates central metrics aggregation, CSV output behavior, and quality-related metrics used by the experiment logs |
+
+These tests cover the telemetry parser promised in the milestone plan and part of the metrics infrastructure used for evaluation. Additional offline tests for command retry behavior, UDP loopback behavior, `StateReceiver` runtime behavior, link-quality classification, and CSV schema stability would further harden the system, but those were not explicitly required as automated tests in the original milestone plan.

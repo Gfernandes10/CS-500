@@ -78,12 +78,13 @@ public:
     /// Initialize command channel and internal components.
     /// @param drone_ip Tello IP address (default: 192.168.10.1).
     /// @param drone_port Tello command port (default: 8889).
-    /// @param local_port Local UDP port for command socket binding if needed.
+    /// @param local_port Local UDP command port. The Tello SDK expects the host
+    /// to send and receive command-channel packets through UDP 8889.
     /// @return ResponseCode::OK on success, error otherwise.
     ResponseCode initialize(
         const std::string& drone_ip = "192.168.10.1",
         uint16_t drone_port = 8889,
-        uint16_t local_port = 9000
+        uint16_t local_port = 8889
     );
 
     /// Shutdown client and release resources.
@@ -246,6 +247,7 @@ private:
     bool has_keepalive_last_tick_;
     std::chrono::steady_clock::time_point keepalive_last_success_tp_;
     std::chrono::steady_clock::time_point keepalive_last_tick_tp_;
+
 };
 
 } // namespace tello

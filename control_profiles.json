@@ -1,0 +1,20 @@
+{
+    "profiles": [
+        {
+            "aggression": 20,
+            "input_type": "keyboard",
+            "key_bindings": {
+                "back": 16777237,
+                "down": 83,
+                "forward": 16777235,
+                "left": 65,
+                "right": 68,
+                "up": 87,
+                "yaw_left": 16777234,
+                "yaw_right": 16777236
+            },
+            "name": "Default"
+        }
+    ],
+    "version": 1
+}
