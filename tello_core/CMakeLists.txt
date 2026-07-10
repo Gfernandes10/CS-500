@@ -43,7 +43,6 @@ endif()
 
 # Library: tello_core
 add_library(tello_core
-    src/logger.cpp
     src/udp_socket.cpp
     src/command_executor.cpp
     src/tello_client.cpp

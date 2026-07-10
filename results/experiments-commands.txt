@@ -1,0 +1,145 @@
+E4-VIDEO-CLI - FFmpeg Video Baseline
+
+
+./build/tello_core_standalone/tello_cli --video-watch \
+  --interval-ms 1000 \
+  --duration-s 150 \
+  --metrics-csv results/final_repeated/E4-VIDEO-CLI-R03.csv \
+  --test-id E4-VIDEO-CLI-R03 \
+  --scenario video-cli-baseline \
+  --notes "stationary FFmpeg repetition 3 of 3"
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E4-VIDEO-CLI-D01-PCAP.pcap
+
+./build/tello_core_standalone/tello_cli --video-watch \
+  --interval-ms 1000 \
+  --duration-s 150 \
+  --metrics-csv results/final_repeated/E4-VIDEO-CLI-D01-PCAP.csv \
+  --test-id E4-VIDEO-CLI-D01-PCAP \
+  --scenario video-cli-baseline \
+  --notes "with pcap; stationary FFmpeg repetition 1 of 3"
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E4-VIDEO-CLI-D02-PCAP.pcap
+
+./build/tello_core_standalone/tello_cli --video-watch \
+  --interval-ms 1000 \
+  --duration-s 150 \
+  --metrics-csv results/final_repeated/E4-VIDEO-CLI-D02-PCAP.csv \
+  --test-id E4-VIDEO-CLI-D02-PCAP \
+  --scenario video-cli-baseline \
+  --notes "with pcap; stationary FFmpeg repetition 2 of 3"
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E4-VIDEO-CLI-D03-PCAP.pcap
+
+./build/tello_core_standalone/tello_cli --video-watch \
+  --interval-ms 1000 \
+  --duration-s 150 \
+  --metrics-csv results/final_repeated/E4-VIDEO-CLI-D03-PCAP.csv \
+  --test-id E4-VIDEO-CLI-D03-PCAP \
+  --scenario video-cli-baseline \
+  --notes "with pcap; stationary FFmpeg repetition 3 of 3"
+
+
+E5-GUI-VID-IDLE - Stationary Control Panel Baseline
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-R01.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-R01-state.csv
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-R02.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-R02-state.csv
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-R03.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-R03-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E5-GUI-VID-IDLE-D01-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-D01-PCAP.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-D01-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E5-GUI-VID-IDLE-D02-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-D02-PCAP.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-D02-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E5-GUI-VID-IDLE-D03-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E5-GUI-VID-IDLE-D03-PCAP.csv
+state csv:       results/final_repeated/E5-GUI-VID-IDLE-D03-PCAP-state.csv
+
+E6-RC-IDLE - Ground RC Worker And Profile Safety
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-R01.csv
+state csv:       results/final_repeated/E6-RC-IDLE-R01-state.csv
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-R02.csv
+state csv:       results/final_repeated/E6-RC-IDLE-R02-state.csv
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-R03.csv
+state csv:       results/final_repeated/E6-RC-IDLE-R03-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E6-RC-IDLE-D01-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-D01-PCAP.csv
+state csv:       results/final_repeated/E6-RC-IDLE-D01-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E6-RC-IDLE-D02-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-D02-PCAP.csv
+state csv:       results/final_repeated/E6-RC-IDLE-D02-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E6-RC-IDLE-D03-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E6-RC-IDLE-D03-PCAP.csv
+state csv:       results/final_repeated/E6-RC-IDLE-D03-PCAP-state.csv
+
+E7-KBD-RESPONSE - Flight Response And Combined Load
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-R01.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-R01-state.csv
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-R02.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-R02-state.csv
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-R03.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-R03-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E7-KBD-RESPONSE-D01-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-D01-PCAP.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-D01-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E7-KBD-RESPONSE-D02-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-D02-PCAP.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-D02-PCAP-state.csv
+
+sudo tcpdump -i any -nn -s 0 \
+  'host 192.168.10.1 and udp' \
+  -w results/final_repeated/pcap/E7-KBD-RESPONSE-D03-PCAP.pcap
+
+GUI metrics csv: results/final_repeated/E7-KBD-RESPONSE-D03-PCAP.csv
+state csv:       results/final_repeated/E7-KBD-RESPONSE-D03-PCAP-state.csv
+
+

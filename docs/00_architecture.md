@@ -36,8 +36,8 @@ The `tello_core` library owns the drone-specific SDK behavior. Applications shou
 ### Metrics and Logging
 
 - `MetricsCollector`: central CSV schema for command, telemetry, video, GUI, recovery, keepalive, RC, and aggregate link-quality metrics.
-- `Logger` / `ConsoleLogger`: pluggable logging abstraction.
-- The Qt Control Panel records user-visible log rows into the metrics CSV so command, GUI, telemetry, and recovery events can be correlated after a run.
+- CLI applications print operator-facing status and errors to the terminal.
+- The Qt Control Panel displays operator-facing messages and records those timestamped log rows through `MetricsCollector`, so command, GUI, telemetry, and recovery events can be correlated after a run.
 
 ### Applications
 

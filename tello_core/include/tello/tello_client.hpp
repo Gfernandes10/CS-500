@@ -4,7 +4,6 @@
 #include "types.hpp"
 #include "udp_socket.hpp"
 #include "command_executor.hpp"
-#include "logger.hpp"
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>

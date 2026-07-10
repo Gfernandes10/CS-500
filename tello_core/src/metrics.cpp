@@ -450,30 +450,6 @@ void MetricsCollector::setVideoPacketDelta(uint64_t delta) {
     snapshot_.video_packet_delta = delta;
 }
 
-void MetricsCollector::updateVideoAssemblerStats(const VideoAssemblyStats& stats) {
-    // NAL assembly stats are copied from the H264 boundary parser.
-    std::lock_guard<std::mutex> lock(mutex_);
-    snapshot_.nal = stats;
-}
-
-void MetricsCollector::updateNalClassificationStats(
-    uint64_t sps,
-    uint64_t pps,
-    uint64_t idr,
-    uint64_t non_idr,
-    uint64_t other,
-    uint64_t decode_gated
-) {
-    // NAL classification counters preserve stream composition diagnostics.
-    std::lock_guard<std::mutex> lock(mutex_);
-    snapshot_.nal_sps = sps;
-    snapshot_.nal_pps = pps;
-    snapshot_.nal_idr = idr;
-    snapshot_.nal_non_idr = non_idr;
-    snapshot_.nal_other = other;
-    snapshot_.nal_decode_gated = decode_gated;
-}
-
 void MetricsCollector::updateDecoderStats(const VideoDecodeStats& stats) {
     // Decode stats are copied from the FFmpeg decoder backend.
     std::lock_guard<std::mutex> lock(mutex_);
@@ -702,8 +678,7 @@ std::string MetricsCollector::toCsvHeader() const {
            "link_quality,link_quality_score,link_safe_for_nonzero_rc,link_quality_reason,"
            "link_telemetry_quality,link_video_quality,link_command_quality,link_rc_quality,"
            "rc_packet_gap_ms,rc_expected_period_ms,rc_blackout_count,rc_last_nonzero_age_ms,rc_safety_override_active,"
-           "nal_packets_in,nal_bytes_in,nal_units,nal_sps,nal_pps,nal_idr,nal_non_idr,nal_other,nal_decode_gated,nal_resyncs,nal_buffered_bytes,"
-           "decoder_nals_in,decoder_packets_sent,decoder_frames_decoded,decoder_errors,decoder_fps_ema,"
+           "decoder_frames_decoded,decoder_errors,decoder_fps_ema,"
            "frame_width,frame_height,keyframes,paused,overlay_enabled,"
            "recovery_attempted,recovery_result,recovery_hard,recovery_stage,recovery_command_channel_available,event,log_timestamp,log_message,connection_state,last_outage_failures,"
            "plot_metric,state_sequence_delta,state_receiver_running,"
@@ -818,19 +793,6 @@ std::string MetricsCollector::toCsvLine() const {
         << s.link_quality.rc_blackout_count << ','
         << s.link_quality.rc_last_nonzero_age_ms << ','
         << (s.link_quality.rc_safety_override_active ? 1 : 0) << ','
-        << s.nal.packets_in << ','
-        << s.nal.bytes_in << ','
-        << s.nal.nal_units_out << ','
-        << s.nal_sps << ','
-        << s.nal_pps << ','
-        << s.nal_idr << ','
-        << s.nal_non_idr << ','
-        << s.nal_other << ','
-        << s.nal_decode_gated << ','
-        << s.nal.parse_resyncs << ','
-        << s.nal.buffered_bytes << ','
-        << s.decoder.nals_in << ','
-        << s.decoder.packets_sent << ','
         << s.decoder.frames_decoded << ','
         << s.decoder.decode_errors << ','
         << s.decoder.decode_fps_ema << ','

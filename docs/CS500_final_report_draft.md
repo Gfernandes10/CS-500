@@ -400,7 +400,7 @@ In standalone mode the Control Panel owns the command channel directly. If ROS m
 
 The original milestone plan divided the project into eight phases. This section maps each planned phase to the delivered implementation.
 
-An accompanying continuous evidence video will be linked here after upload: [CS 500 evidence video placeholder](https://youtu.be/REPLACE_WITH_FINAL_EVIDENCE_VIDEO). The video demonstrates the delivered artifacts for Phases 0, 1, 2, 3, 5, and 6. Phase 4 is evidenced primarily by the experimental methodology, CSV-based measurements, and quantitative results in this report. Phase 7 is evidenced by this final report.
+An accompanying continuous evidence video is available here: [CS 500 evidence video](https://www.youtube.com/watch?v=wz3gtlSBJCw). The video demonstrates the delivered artifacts for Phases 0, 1, 2, 3, 5, and 6. Phase 4 is evidenced primarily by the experimental methodology, CSV-based measurements, and quantitative results in this report. Phase 7 is evidenced by this final report.
 
 ### 5.1 Phase 0: Project Definition and Architecture
 
@@ -414,7 +414,7 @@ An accompanying continuous evidence video will be linked here after upload: [CS 
 
 **Planned goal.** Phase 1 was intended to implement UDP communication, command execution, timeout and retry behavior, logging, and a CLI tool for command testing.
 
-**Delivered work.** This phase was delivered. `UdpSocket`, `CommandExecutor`, and `TelloClient` implement the command channel. The command socket was refined to use the SDK command port consistently and avoid ambiguous response ownership. The CLI supports one-shot commands, command watching, SDK initialization, keepalive, command metrics, and recovery state reporting. Logging is integrated through a console logger and GUI log export.
+**Delivered work.** This phase was delivered. `UdpSocket`, `CommandExecutor`, and `TelloClient` implement the command channel. The command socket was refined to use the SDK command port consistently and avoid ambiguous response ownership. The CLI supports one-shot commands, command watching, SDK initialization, keepalive, command metrics, and recovery state reporting. Operator-facing status and errors are printed by the CLI or displayed in the Control Panel, while `MetricsCollector` stores structured command results, attempt diagnostics, timestamped GUI messages, recovery events, and connection state in CSV exports.
 
 **Evidence included.** The smoke test and command baseline in the experimental results section validate this phase with real-drone command latency, timeout, retry, and transient-recovery measurements. The packet-capture discussion provides additional evidence that periodic command delays were transport/drone-response events rather than local API parsing or GUI blocking. The accompanying evidence video shows CLI command execution and metrics CSV generation.
 
@@ -699,7 +699,7 @@ This future work will move the system from an implemented ROS driver toward a te
 
 This project produced a modular C++ communication, telemetry, video, metrics, control, and ROS integration system for the DJI Tello drone. The system includes a reusable core library, command-line tools, a Qt Control Panel, FFmpeg-based video display, CSV experiment logging, configurable keyboard RC control, and a ROS2 bridge.
 
-Real-drone experiments validated the main engineering claims. The command channel was reliable in the baseline run, telemetry and video freshness remained healthy in core scenarios, FFmpeg Stream provided practical live video performance, keyboard RC control worked during flight, and recovery was demonstrated after a drone power-cycle. The project is now ready for final report refinement and deeper ROS2 validation with external autonomy nodes.
+Real-drone experiments validated the main engineering claims. The command channel was reliable in the baseline run, telemetry and video freshness remained healthy in core scenarios, FFmpeg Stream provided practical live video performance, keyboard RC control worked during flight, and recovery was demonstrated after a drone power-cycle. The delivered system and this report complete the planned CS 500 implementation and evaluation scope while providing a foundation for deeper ROS2 validation with external autonomy nodes.
 
 ## Appendix A: DJI Tello SDK Command Summary
 

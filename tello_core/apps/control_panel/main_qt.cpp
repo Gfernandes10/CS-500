@@ -1766,7 +1766,7 @@ private:
         auto* right = new QVBoxLayout(right_host);
         vision_status_label_ = new QLabel("status: idle", right_host);
         vision_rx_label_ = new QLabel("stream packets: 0", right_host);
-        vision_nal_label_ = new QLabel("backend: ffmpeg stream", right_host);
+        vision_backend_label_ = new QLabel("backend: ffmpeg stream", right_host);
         vision_fps_label_ = new QLabel("decode fps: 0.00", right_host);
         vision_size_label_ = new QLabel("size: 0x0", right_host);
         vision_decode_err_label_ = new QLabel("decode errors: 0", right_host);
@@ -1774,7 +1774,7 @@ private:
 
         right->addWidget(vision_status_label_);
         right->addWidget(vision_rx_label_);
-        right->addWidget(vision_nal_label_);
+        right->addWidget(vision_backend_label_);
         right->addWidget(vision_fps_label_);
         right->addWidget(vision_size_label_);
         right->addWidget(vision_decode_err_label_);
@@ -2174,8 +2174,8 @@ private:
                 vision_rx_label_->setText(QString("stream packets: %1")
                                               .arg(static_cast<qulonglong>(stream_stats.packets_read)));
             }
-            if (vision_nal_label_ != nullptr) {
-                vision_nal_label_->setText("backend: ffmpeg stream");
+            if (vision_backend_label_ != nullptr) {
+                vision_backend_label_->setText("backend: ffmpeg stream");
             }
             if (vision_fps_label_ != nullptr) {
                 vision_fps_label_->setText(QString("decode fps: %1")
@@ -2307,11 +2307,6 @@ private:
         rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
         rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
 
-        tello::MetricsCollector::VideoAssemblyStats nal_stats{};
-        nal_stats.packets_in = stream_stats.packets_read;
-        nal_stats.bytes_in = stream_stats.bytes_read;
-        nal_stats.nal_units_out = stream_stats.frames_decoded;
-
         tello::MetricsCollector::VideoDecodeStats dec_stats{};
         dec_stats.frames_decoded = stream_stats.frames_decoded;
         dec_stats.decode_errors = stream_stats.decode_errors;
@@ -2323,7 +2318,6 @@ private:
         metrics_.setAttempt(metrics_attempt_);
         metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(0);
-        metrics_.updateVideoAssemblerStats(nal_stats);
         metrics_.updateDecoderStats(dec_stats);
         metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
@@ -3377,11 +3371,6 @@ private:
         rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
         rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
 
-        tello::MetricsCollector::VideoAssemblyStats nal_stats{};
-        nal_stats.packets_in = stream_stats.packets_read;
-        nal_stats.bytes_in = stream_stats.bytes_read;
-        nal_stats.nal_units_out = stream_stats.frames_decoded;
-
         tello::MetricsCollector::VideoDecodeStats dec_stats{};
         dec_stats.frames_decoded = stream_stats.frames_decoded;
         dec_stats.decode_errors = stream_stats.decode_errors;
@@ -3402,7 +3391,6 @@ private:
         metrics_.setAttempt(metrics_attempt_);
         metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(delta);
-        metrics_.updateVideoAssemblerStats(nal_stats);
         metrics_.updateDecoderStats(dec_stats);
         metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
@@ -3896,7 +3884,7 @@ private:
     QLabel* vision_frame_label_ = nullptr;
     QLabel* vision_status_label_ = nullptr;
     QLabel* vision_rx_label_ = nullptr;
-    QLabel* vision_nal_label_ = nullptr;
+    QLabel* vision_backend_label_ = nullptr;
     QLabel* vision_fps_label_ = nullptr;
     QLabel* vision_size_label_ = nullptr;
     QLabel* vision_decode_err_label_ = nullptr;

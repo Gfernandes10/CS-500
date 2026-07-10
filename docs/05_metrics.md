@@ -6,17 +6,18 @@ Provide a repeatable metrics pipeline for command, telemetry, video, GUI, recove
 
 ## Experiment and Analysis Workflow
 
-1. Real-drone experiment procedures are defined in [08_experiments.md](08_experiments.md).
-2. Final figures and quantitative summaries are generated with [final_experiment_analysis.ipynb](../notebooks/final_experiment_analysis.ipynb).
-3. Generated report figures are saved under [docs/images](images/).
-4. The final report uses a curated experiment set from [results](../results/), not every diagnostic/demo CSV that may be present in the directory.
+1. Development and diagnostic procedures are defined in [08_experiments.md](08_experiments.md).
+2. The statistically repeated final protocol is defined in [09_final_repeated_experiment_protocol.md](09_final_repeated_experiment_protocol.md).
+3. Final figures and quantitative summaries are generated with [final_experiment_analysis.ipynb](../notebooks/final_experiment_analysis.ipynb).
+4. Generated report figures are saved under [docs/images](images/).
+5. The final report uses a curated experiment set from [results](../results/), not every diagnostic/demo CSV that may be present in the directory.
 
 ## Current Implementation
 
 1. `MetricsCollector` is the central runtime metrics aggregator.
 2. CLI command-watch, CLI state-watch, CLI video-watch, and Qt Control Panel exports use the central CSV schema.
 3. Standalone `tello_viewer` is retired from the active build surface; video/runtime metrics live in the CLI diagnostics and Qt Control Panel.
-4. FFmpeg Stream is the only active video runtime path. Any retained NAL/H264 column names are compatibility fields; the active runtime values are populated from FFmpeg transport/decode statistics.
+4. FFmpeg Stream is the only active video runtime path. Video exports contain FFmpeg transport, decoded-frame, decode-error, frame-size, FPS, and freshness fields; the retired NAL assembly schema is no longer exported.
 5. GUI-visible log messages are also written into the metrics CSV with timestamps, allowing event rows to be correlated with telemetry, command, RC, and video behavior.
 6. State recording uses a separate state CSV that includes telemetry samples and recorded RC command samples on the same monotonic recording timeline.
 

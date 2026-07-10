@@ -1,7 +1,6 @@
 #ifndef TELLO_METRICS_HPP
 #define TELLO_METRICS_HPP
 
-#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -15,7 +14,7 @@ namespace tello {
 // Metrics Collector
 // ============================================================================
 /// Central aggregator for runtime metrics produced by command, telemetry,
-/// video transport, stream assembly, decode, and experiment workflows.
+/// video transport, decode, and experiment workflows.
 class MetricsCollector {
 public:
     /// Metadata written as a common prefix for experiment CSV rows.
@@ -44,19 +43,8 @@ public:
         uint64_t gap_events_1000ms = 0;
     };
 
-    /// Pipeline-neutral stream assembly counters retained for CSV compatibility.
-    struct VideoAssemblyStats {
-        uint64_t packets_in = 0;
-        uint64_t bytes_in = 0;
-        uint64_t nal_units_out = 0;
-        uint64_t parse_resyncs = 0;
-        size_t buffered_bytes = 0;
-    };
-
     /// Pipeline-neutral decode counters produced by FFmpeg Stream.
     struct VideoDecodeStats {
-        uint64_t nals_in = 0;
-        uint64_t packets_sent = 0;
         uint64_t frames_decoded = 0;
         uint64_t decode_errors = 0;
         double decode_fps_ema = 0.0;
@@ -133,13 +121,6 @@ public:
         int32_t video_quality_score = 0;
         uint64_t video_packet_delta = 0;
         LinkQualitySnapshot link_quality;
-        VideoAssemblyStats nal;
-        uint64_t nal_sps = 0;
-        uint64_t nal_pps = 0;
-        uint64_t nal_idr = 0;
-        uint64_t nal_non_idr = 0;
-        uint64_t nal_other = 0;
-        uint64_t nal_decode_gated = 0;
         VideoDecodeStats decoder;
 
         int32_t frame_width = 0;
@@ -261,19 +242,6 @@ public:
 
     /// Store latest video packet delta for periodic watch rows.
     void setVideoPacketDelta(uint64_t delta);
-
-    /// Store latest stream assembly statistics.
-    void updateVideoAssemblerStats(const VideoAssemblyStats& stats);
-
-    /// Store latest classified NAL counters.
-    void updateNalClassificationStats(
-        uint64_t sps,
-        uint64_t pps,
-        uint64_t idr,
-        uint64_t non_idr,
-        uint64_t other,
-        uint64_t decode_gated
-    );
 
     /// Store latest decoder statistics.
     void updateDecoderStats(const VideoDecodeStats& stats);

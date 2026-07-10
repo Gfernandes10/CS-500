@@ -110,15 +110,7 @@ int main() {
     metrics.updateVideoTransportStats(video);
     metrics.setVideoPacketDelta(12);
 
-    tello::MetricsCollector::VideoAssemblyStats nal{};
-    nal.packets_in = 100;
-    nal.nal_units_out = 42;
-    nal.buffered_bytes = 7;
-    metrics.updateVideoAssemblerStats(nal);
-    metrics.updateNalClassificationStats(2, 2, 1, 37, 0, 4);
-
     tello::MetricsCollector::VideoDecodeStats decoder{};
-    decoder.nals_in = 42;
     decoder.frames_decoded = 30;
     decoder.decode_errors = 1;
     decoder.decode_fps_ema = 28.75;
@@ -142,13 +134,7 @@ int main() {
     ok &= expect(snapshot.video_quality == "OK", "fresh video should be marked OK");
     ok &= expect(snapshot.video_quality_score == 100, "fresh video quality score should be 100");
     ok &= expect(snapshot.video_packet_delta == 12, "video packet delta should be stored");
-    ok &= expect(snapshot.nal.nal_units_out == 42, "NAL stats should be copied");
     ok &= expect(snapshot.command_mutex_wait_ms == 6, "command mutex wait should be stored");
-    ok &= expect(snapshot.nal_sps == 2, "NAL SPS count should be stored");
-    ok &= expect(snapshot.nal_pps == 2, "NAL PPS count should be stored");
-    ok &= expect(snapshot.nal_idr == 1, "NAL IDR count should be stored");
-    ok &= expect(snapshot.nal_non_idr == 37, "NAL non-IDR count should be stored");
-    ok &= expect(snapshot.nal_decode_gated == 4, "NAL gated count should be stored");
     ok &= expect(snapshot.decoder.frames_decoded == 30, "decoder stats should be copied");
     ok &= expect(snapshot.frame_width == 960 && snapshot.frame_height == 720, "frame size should be stored");
     ok &= expect(snapshot.keyframes == 1, "keyframe count should increment");
@@ -179,6 +165,11 @@ int main() {
     const std::string header = metrics.toCsvHeader();
     const std::string row = metrics.toCsvLine();
     ok &= expect(countCsvColumns(header) == countCsvColumns(row), "CSV header and row column counts should match");
+    ok &= expect(header.find("nal_packets_in") == std::string::npos
+                     && header.find("decoder_nals_in") == std::string::npos,
+                 "CSV header should not expose retired NAL assembly fields");
+    ok &= expect(header.find("decoder_frames_decoded") != std::string::npos,
+                 "CSV header should retain active FFmpeg decode fields");
     ok &= expect(row.find("\"note, with comma and \"\"quote\"\"\"") != std::string::npos,
                  "CSV row should escape quoted text fields");
 

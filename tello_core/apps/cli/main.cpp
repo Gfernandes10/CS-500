@@ -1,5 +1,4 @@
 #include "tello/tello_client.hpp"
-#include "tello/logger.hpp"
 #include "tello/metrics.hpp"
 #include "tello/state_receiver.hpp"
 #include "tello/video_stream_reader_ffmpeg.hpp"
@@ -11,7 +10,6 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
-#include <memory>
 #include <string>
 #include <thread>
 
@@ -274,9 +272,6 @@ int main(int argc, char** argv) {
         std::cout << "[tello_cli] Single-run smoke mode starting..." << std::endl;
     }
 
-    auto logger = std::make_shared<tello::ConsoleLogger>(tello::Logger::Level::DEBUG);
-    tello::initializeGlobalLogger(logger);
-
     tello::TelloClient client;
 
     // Step 1: open command socket to Tello default endpoint.
@@ -465,11 +460,6 @@ int main(int argc, char** argv) {
                 rx_stats.last_packet_age_ms = stream_stats.last_frame_age_ms;
                 rx_stats.rx_pps_ema = stream_stats.decode_fps_ema;
 
-                tello::MetricsCollector::VideoAssemblyStats nal_stats{};
-                nal_stats.packets_in = stream_stats.packets_read;
-                nal_stats.bytes_in = stream_stats.bytes_read;
-                nal_stats.nal_units_out = stream_stats.frames_decoded;
-
                 tello::MetricsCollector::VideoDecodeStats decoder_stats{};
                 decoder_stats.frames_decoded = stream_stats.frames_decoded;
                 decoder_stats.decode_errors = stream_stats.decode_errors;
@@ -481,8 +471,6 @@ int main(int argc, char** argv) {
                 metrics.updateTelemetryState(telemetry_state, telemetry_available);
                 metrics.updateVideoTransportStats(rx_stats);
                 metrics.setVideoPacketDelta(delta);
-                metrics.updateVideoAssemblerStats(nal_stats);
-                metrics.updateNalClassificationStats(0, 0, 0, 0, 0, 0);
                 metrics.updateDecoderStats(decoder_stats);
                 metrics.updateFrameInfo(stream_stats.frame_width, stream_stats.frame_height, false);
                 metrics.recordRecoveryEvent(
