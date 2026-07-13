@@ -37,6 +37,9 @@ VideoStreamReaderFfmpeg::VideoStreamReaderFfmpeg()
       stats_(),
       has_last_frame_tp_(false),
       last_frame_tp_(std::chrono::steady_clock::now()),
+      has_fps_window_start_(false),
+      fps_window_start_(std::chrono::steady_clock::now()),
+      frames_since_fps_update_(0),
       error_mutex_(),
       last_error_() {}
 
@@ -56,6 +59,8 @@ ResponseCode VideoStreamReaderFfmpeg::start(const std::string& url) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_ = Stats{};
         has_last_frame_tp_ = false;
+        has_fps_window_start_ = false;
+        frames_since_fps_update_ = 0;
     }
     {
         std::lock_guard<std::mutex> lock(error_mutex_);
@@ -304,7 +309,13 @@ void VideoStreamReaderFfmpeg::readerLoop(std::string url) {
             decoded.width = frame->width;
             decoded.height = frame->height;
             decoded.rgb_stride = frame->width * 3;
+#ifdef AV_FRAME_FLAG_KEY
             decoded.is_key_frame = (frame->flags & AV_FRAME_FLAG_KEY) != 0;
+#else
+            // FFmpeg versions shipped before AV_FRAME_FLAG_KEY expose the
+            // decoded-frame key status through the legacy key_frame field.
+            decoded.is_key_frame = frame->key_frame != 0;
+#endif
             decoded.rgb.resize(static_cast<size_t>(decoded.rgb_stride) * static_cast<size_t>(decoded.height));
 
             if (sws_ctx != nullptr) {
@@ -336,14 +347,27 @@ void VideoStreamReaderFfmpeg::readerLoop(std::string url) {
                 if (decoded.is_key_frame) {
                     ++stats_.keyframes;
                 }
-                if (has_last_frame_tp_) {
-                    const double dt_s = std::chrono::duration<double>(now - last_frame_tp_).count();
-                    if (dt_s > 0.0) {
-                        const double fps = 1.0 / dt_s;
+                // Estimate throughput over a time window instead of taking
+                // 1 / inter-frame time. FFmpeg can release several decoded
+                // frames in one burst, which made the old EMA report
+                // artificial 40-70 FPS spikes for a stable 30 FPS stream.
+                if (!has_fps_window_start_) {
+                    fps_window_start_ = now;
+                    frames_since_fps_update_ = 0;
+                    has_fps_window_start_ = true;
+                } else {
+                    ++frames_since_fps_update_;
+                    const double window_s =
+                        std::chrono::duration<double>(now - fps_window_start_).count();
+                    if (window_s >= 0.5) {
+                        const double fps =
+                            static_cast<double>(frames_since_fps_update_) / window_s;
                         const double alpha = 0.2;
                         stats_.decode_fps_ema = stats_.decode_fps_ema <= 0.0
                             ? fps
                             : (alpha * fps) + ((1.0 - alpha) * stats_.decode_fps_ema);
+                        fps_window_start_ = now;
+                        frames_since_fps_update_ = 0;
                     }
                 }
                 last_frame_tp_ = now;

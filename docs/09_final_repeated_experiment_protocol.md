@@ -38,6 +38,21 @@ The final set makes the following changes to the earlier development matrix:
 | `E9-WIFI-LOSS` | command reconnect after host Wi-Fi interruption | 3 recovery events | No | Yes |
 | `E10-ROS-END-TO-END` | ROS topics, services, video, and ownership model | 1 acceptance run | Optional | On anomaly |
 
+## Recorded Execution Status - 2026-07-10
+
+The current campaign uses Ubuntu 20.04.6 native Linux on Wi-Fi interface `wlx503eaa237a02`. The native standalone binary is under `build/tello_core_native/`; output names include `NATIVE` so they cannot be confused with the earlier WSL2 data.
+
+| Experiment | Recorded evidence | Decision |
+|---|---|---|
+| `E2-CMD-BASE` | 3 native primary runs and 3 native physical-interface PCAP diagnostics; no native timeout, retry, recovery, or blackout | Native Linux removes the recurring WSL2 command-channel blackout under the tested conditions |
+| `E3-STATE-CLI` | 3 earlier WSL2 primary runs, 3 earlier WSL2 PCAP diagnostics, and 3 new native primary runs | Native telemetry is equivalent or slightly better; no gap >=300 ms in any group, so no native E3 PCAP was triggered |
+| `E4-VIDEO-CLI` | 3 native primary runs without PCAP | 960x720 video remained near 30 FPS and telemetry remained continuous; no E4 PCAP was triggered |
+| `E5-GUI-VID-IDLE` | Pending manual GUI execution | Execute manually on native Linux; do not introduce a WSL2 comparison |
+
+E2 and E3 together provide the evidence for continuing subsequent experiments only on native Linux. For this campaign, the optional PCAP rule is anomaly-driven after E2: capture an additional diagnostic run only if a CSV reports a new transport gap, stale interval, timeout, or recovery. The already-recorded WSL2 E3 PCAP runs remain valid historical evidence and are not repeated merely for symmetry.
+
+The three native E4 runs used the same charged battery, with recorded run conditions of 90->85%, 77->73%, and 82->80%. The drone remained stationary with motors off. All three runs are retained because video and telemetry remained continuous and decode-error counters did not grow after stream acquisition.
+
 ## Common Preparation
 
 1. Build and test the current source:
@@ -45,7 +60,8 @@ The final set makes the following changes to the earlier development matrix:
 ```bash
 cmake -S tello_core -B build/tello_core_standalone
 cmake --build build/tello_core_standalone
-ctest --test-dir build/tello_core_standalone -L offline --output-on-failure
+cmake -E chdir build/tello_core_standalone \
+  ctest -L offline --output-on-failure
 ```
 
 2. Create a separate output directory for the repeated experiment set:

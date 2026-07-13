@@ -48,6 +48,9 @@ public:
         uint64_t frames_decoded = 0;
         uint64_t decode_errors = 0;
         double decode_fps_ema = 0.0;
+        int32_t frame_width = 0;
+        int32_t frame_height = 0;
+        uint64_t keyframes = 0;
     };
 
     /// Aggregated link health intended for GUI display and future control gating.

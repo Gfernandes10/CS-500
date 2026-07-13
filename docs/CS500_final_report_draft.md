@@ -4,30 +4,32 @@
 **Student:** Gabriel Fernandes  
 **Supervisor:** Prof. Stefan Bruda  
 **Program Context:** Course-based M.Sc. project  
-**Status:** Draft report with ROS2 integration  
+**Status:** Final report
 
 ## Abstract
 
-This project develops and evaluates a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. The system is built around a reusable core library that implements UDP-based SDK command execution, telemetry parsing, FFmpeg-based video streaming, runtime metrics, recovery behavior, and safety-oriented RC control. On top of the core library, the project provides command-line tools and a Qt-based Control Panel for live video, telemetry visualization, CSV logging, manual commands, and configurable keyboard-based flight control.
+This project developed and evaluated a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. A reusable core library owns UDP command execution, asynchronous telemetry, FFmpeg video decoding, runtime metrics, recovery, and safety-oriented RC control. Command-line tools and a Qt Control Panel reuse that core for diagnosis, live operation, visualization, CSV recording, and configurable keyboard flight. A ROS2 bridge was also implemented around the released core artifact.
 
-The implementation was evaluated using real-drone experiments covering command latency, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, power-cycle recovery, and Wi-Fi reconnect behavior. The final experiments show stable baseline command behavior, usable telemetry and video freshness, approximately 31-34 FPS FFmpeg video decoding, and measurable keyboard RC response across vertical, yaw, and attitude-proxy axes during flight. The project also includes a ROS2 integration layer that exposes the core library to robotics workflows through topics, services, command inputs, video messages, and an aggregate link-quality state.
+Evaluation used repeated real-drone experiments spanning command latency, telemetry continuity, video decoding, GUI scheduling, grounded RC safety, airborne response, drone power-cycle recovery, and host Wi-Fi reconnection. An initially recurring 2.4-3.2 s command blackout under WSL2 motivated a controlled native-Linux reproduction. Every WSL2 command run contained a recovered interruption, whereas 708 native command samples completed with zero retry, timeout, or recovery and physical-interface captures contained a response for every request. Native telemetry remained near 9.88 Hz without gaps of 300 ms or more; native 960×720 video remained near 30 fps; GUI and flight runs retained fresh telemetry/video; grounded RC returned to neutral without unsafe nonzero output; and all recorded power-cycle and Wi-Fi interruption trials recovered. The results support native Linux as the deployment environment and demonstrate a reusable experimental basis for future closed-loop work.
 
 ## 1. Introduction
 
-Small aerial robots are useful platforms for studying robotics software because they combine networking, telemetry, video streaming, control, safety, and user interaction in a compact system. The DJI Tello is especially suitable for a course project because it exposes a simple SDK over Wi-Fi while still presenting realistic engineering challenges: unreliable wireless links, UDP packet loss, command timeouts, asynchronous telemetry, video decoding, and safety-critical motion commands.
+Small aerial robots combine networking, asynchronous sensing, video, control, safety, and user interaction in a compact platform. The DJI Tello is attractive for applied robotics because its SDK is accessible over Wi-Fi, but its UDP transport also exposes realistic engineering problems: delayed or missing command responses, independently arriving telemetry, compressed video, shared-resource contention, and the safety consequences of stale motion commands.
 
-The goal of this CS 500 project is to define and initially develop a graduate-level applied robotics software problem: a modular C++ communication and control stack for the DJI Tello drone. The project focuses on a reusable core library rather than a one-off script. The software is designed to support multiple clients, including command-line tools, a desktop Control Panel, and a ROS2 bridge.
+The goal of this CS 500 project was therefore not to build a one-off flight script, but a reusable C++ communication and control stack shared by command-line tools, a desktop Control Panel, and a ROS2 integration layer. The main objectives were to:
 
-The main objectives are:
+1. implement a reliable and diagnosable SDK command channel;
+2. parse and expose asynchronous drone telemetry;
+3. receive, decode, and display H264 video through FFmpeg;
+4. collect metrics detailed enough to distinguish application, GUI, and transport behavior;
+5. provide a Qt Control Panel for operation and repeatable data collection;
+6. implement configurable keyboard RC with independent cadence and neutral safety;
+7. evaluate ordinary operation and recovery through repeated real-drone experiments;
+8. expose the same runtime through ROS2 without duplicating drone ownership.
 
-1. implement a reliable command channel over the Tello SDK;
-2. parse and expose telemetry from the drone's state stream;
-3. receive, decode, and display the video stream using FFmpeg;
-4. collect runtime metrics suitable for experimental evaluation;
-5. build a desktop Control Panel for operation and data collection;
-6. implement configurable keyboard RC control with safety-oriented neutral behavior;
-7. evaluate the system using repeatable real-drone experiments;
-8. expose the system through a ROS2 integration layer.
+A major experimental issue shaped the final evaluation. Early repeated command tests under WSL2 showed an interruption at approximately 60-66 seconds in every run. Public API calls eventually returned successfully, but only after multiple UDP receive timeouts and SDK recovery, producing individual latencies around 2.45-3.19 seconds. Telemetry-only tests did not show corresponding continuity gaps. This raised a causal question that could not be answered from application logs alone: was the delay caused by the C++ executor, the drone, the radio, or the additional WSL2/Hyper-V/Windows networking path?
+
+The investigation therefore became part of the project rather than an incidental debugging note. Command runs were repeated with matched packet captures, then reproduced on Ubuntu native Linux using the same C++ implementation and drone. Telemetry was also repeated across WSL2 and native Linux to determine whether the observed effect was command-specific or a broader stream-continuity problem. Once the native evidence removed the periodic blackout, later video, GUI, RC, flight, and recovery experiments were executed only on native Linux.
 
 ## 2. DJI Tello SDK Background
 
@@ -117,7 +119,7 @@ An important refinement was the distinction between a real connection loss and a
 
 Telemetry is received from the Tello state channel on UDP port `8890`. `StateReceiver` runs a background receive loop, parses each packet with `StateParser`, and stores the latest valid state. Consumers access telemetry through a thread-safe latest-state cache.
 
-The project records both wall-clock timestamps and monotonic elapsed timestamps. For analysis, monotonic elapsed time is preferred because it avoids false gaps caused by wall-clock adjustments. Telemetry metrics include receive rate, packet age, interarrival gaps, quality labels, and selected state fields such as height, time-of-flight, battery, temperature, yaw, and vertical velocity.
+The project records wall-clock timestamps for correlation with external logs and packet captures, and monotonic elapsed timestamps for duration and ordering within a run. Telemetry age, receive rate, and packet-interarrival metrics are computed with a monotonic clock, preventing system-clock adjustments from creating artificial gaps.
 
 ### 4.3 Video Pipeline
 
@@ -206,7 +208,7 @@ The initial concern during flight testing was that GUI stalls could cause a move
 
 ROS, the Robot Operating System, is a common middleware framework used in robotics to connect sensors, controllers, planning algorithms, visualization tools, and hardware drivers. Despite its name, ROS is not an operating system in the traditional kernel sense. It provides conventions and libraries for building distributed robot software. In ROS2, independent processes called nodes communicate through typed topics, request/response services, actions, parameters, launch files, and a DDS-based discovery and transport layer. A typical robotics system uses a hardware driver node to publish sensor data and accept commands, while other nodes perform mapping, planning, control, visualization, or logging. Tools such as `ros2 topic echo`, `ros2 service call`, `rqt`, and RViz are then used to inspect and interact with the running graph.
 
-The project includes a separate ROS2 Jazzy integration workspace, prepared as its own GitHub repository rather than as a subdirectory of the academic source tree. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, notebooks, experiment results, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
+The project includes a separate ROS2 Jazzy integration workspace, prepared as its own GitHub repository rather than as a subdirectory of the academic source tree. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, experiment evidence, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
 
 The ROS workspace is organized into four packages:
 
@@ -291,7 +293,7 @@ The ROS launch path was also validated in basic real-drone operation. In this va
 
 The core API can also be used without ROS. In standalone mode, the CLI tools and Qt Control Panel link directly against `tello_core` and communicate with the drone through the SDK UDP channels. This is the mode used for the real-drone experiments in this report.
 
-For users who want to consume the API as a dependency, the preferred distribution path is the versioned release artifact rather than a direct build from the academic source tree. A release contains only the runtime-facing files: public headers, the compiled library, CMake package metadata, runtime resources, and the CLI/Control Panel executables. This allows another C++ or ROS project to depend on a fixed `tello_core` version without copying documentation, notebooks, experiment results, or planning files.
+For users who want to consume the API as a dependency, the preferred distribution path is the versioned release artifact rather than a direct build from the academic source tree. A release contains only the runtime-facing files: public headers, the compiled library, CMake package metadata, runtime resources, and the CLI/Control Panel executables. This allows another C++ or ROS project to depend on a fixed `tello_core` version without copying documentation, experiment evidence, or planning files.
 
 A user can obtain a specific version from the project releases page. The archive name is stable as `tello_core.tar.gz`; the version is selected by the GitHub tag, such as `v1.0.0`, and by downstream build parameters such as `TELLO_CORE_VERSION`. For example, version `1.0.0` can be downloaded and extracted as follows:
 
@@ -447,7 +449,7 @@ An accompanying continuous evidence video is available here: [CS 500 evidence vi
 
 **Planned goal.** Phase 5 was intended to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools. The plan named ROS2 Humble or a compatible ROS2 version; the delivered implementation uses ROS2 Jazzy.
 
-**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace and prepared as an independent GitHub repository. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, notebooks, experiment results, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
+**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace and prepared as an independent GitHub repository. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, experiment evidence, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
 
 The delivered driver node wraps the existing core library and publishes telemetry, battery, connection state, video frames, diagnostics, and aggregate link quality. It subscribes to normalized velocity commands on `/tello/cmd_vel`, converts them to Tello RC commands, and exposes services for connection management, takeoff, landing, emergency stop, stream control, autonomy enable/disable, and GUI command forwarding. The Qt Control Panel can be launched in ROS mode so that the GUI sends commands through the ROS broker instead of talking directly to the drone. Offline build and interface tests were performed with `colcon build`, `colcon test`, and ROS command-line tools. The launch path was also validated with the real drone by connecting through the ROS service path and confirming ROS-mode telemetry and video in the GUI.
 
@@ -473,233 +475,210 @@ All major planned technical components have been delivered at least to an initia
 
 ## 6. Experimental Methodology
 
-The evaluation focuses on the system behaviors that matter for manual operation and future robotics integration: command reliability, telemetry freshness, FFmpeg video performance, GUI responsiveness, keyboard RC safety, and recovery after link or drone-session interruption.
+### 6.1 Motivation and Experimental Logic
 
-All experiments use the same metrics schema. This makes command, telemetry, video, GUI, recovery, keepalive, and RC behavior comparable across CLI and Control Panel runs. The general preparation for real-drone experiments was:
+The campaign was designed as a sequence of isolation experiments. Each stage adds one source of workload or one failure mode only after the preceding layer is understood:
 
-1. build the project;
-2. power on the Tello;
-3. connect the computer to the Tello Wi-Fi network;
-4. wait approximately 10-15 seconds after drone power-on;
-5. run the smoke test before longer experiments;
-6. save metrics and, when applicable, state recordings for later analysis.
-
-Flight-related experiments were performed only in a clear indoor area, with low RC aggression first, short movement windows, and the operator ready to send `land` or `emergency`.
-
-The final experiment matrix is summarized below before the detailed procedures.
-
-| ID | Purpose |
+| ID | Rationale |
 |---|---|
-| `E1-SMOKE-CMD` | Confirm basic SDK connectivity before the run set |
-| `E2-CMD-BASE` | Measure command latency and reliability under stable conditions |
-| `E3-STATE-CLI` | Measure telemetry continuity without GUI or video rendering load |
-| `E4-VIDEO-CLI` | Measure FFmpeg Stream video behavior without Qt rendering |
-| `E5-GUI-VID-IDLE` | Measure GUI telemetry and video behavior while the drone is stationary |
-| `E6-KBD-PROFILE` | Validate keyboard profile persistence and mapping behavior |
-| `E7-KBD-RESPONSE` | Evaluate keyboard RC safety, flight response, telemetry, and video while airborne |
-| `E8-PWR-CYCLE` | Evaluate recovery after a drone restart |
-| `E9-WIFI-LOSS` | Evaluate command reconnect after Wi-Fi loss |
+| E1 | Reject an invalid test session before collecting longer runs |
+| E2 | Isolate synchronous command behavior and investigate the WSL2 delay |
+| E3 | Determine whether telemetry continuity also changes between WSL2 and native Linux |
+| E4 | Add FFmpeg video while excluding Qt |
+| E5 | Add GUI rendering, plotting, and recording |
+| E6 | Validate RC cadence and neutral safety on the ground |
+| E7 | Add flight dynamics under combined command, RC, telemetry, video, and GUI load |
+| E8 | Test complete session recovery after restarting the drone |
+| E9 | Isolate host Wi-Fi loss without intentionally restarting the drone |
+| E10 | Define end-to-end ROS2 acceptance for the released core and bridge |
 
-### 6.1 E1-SMOKE-CMD: Connectivity Smoke Test
+E2 and E3 were the decision point for the operating environment. The WSL2 command path crossed the Linux UDP socket, WSL virtual networking, Hyper-V/Windows networking, the Windows Wi-Fi stack, and the physical radio. Native Linux removed the virtualized and Windows layers while preserving the C++ client, command interval, drone, and physical adapter. Later experiments were native-only because repeating flight and GUI tests on a platform already associated with periodic command interruption would add risk without answering a new project question.
 
-The smoke test verifies that the computer is connected to the drone, the command socket can enter SDK mode, and a simple query succeeds. The CLI sends `command` followed by `battery?` and records a single metrics file. The expected evidence is an `OK` command result, a nonzero command latency, and a valid CSV row. This test prevents wasting time on longer runs when the basic Wi-Fi or SDK setup is not ready.
+Each primary repeated experiment used three independent runs. Packet capture was treated as a separate diagnostic factor and was not silently pooled with primary runs. After E2, an additional PCAP was required only if the CSV exposed a new timeout, stale interval, recovery, or unexplained gap.
 
-### 6.2 E2-CMD-BASE: Command Baseline
+### 6.2 E1: Session Gate
 
-The command baseline measures normal SDK command latency and failure behavior while the drone is idle on a flat surface. The CLI enters SDK mode and sends repeated `battery?` queries for approximately 120 seconds, long enough to observe the recurring transient command-channel events seen during testing. The main metrics are `last_command_result`, `command_latency_ms_avg`, per-command latency, internal attempt logs, recovery timing, and outage counters. This run establishes whether the command path is stable before adding telemetry display, video, GUI load, or flight commands.
+E1 entered SDK mode and issued a simple query before longer work. Its purpose was operational rather than statistical: association and ping do not prove that the drone is accepting SDK commands. A passing gate required an OK command result with no retry, timeout, or final failure.
 
-### 6.3 E3-STATE-CLI: Telemetry Baseline Without GUI
+### 6.3 E2: Command Baseline and WSL2 Investigation
 
-The telemetry baseline measures the state channel without Qt rendering or video decoding. The CLI enters SDK mode, starts the state receiver, and records telemetry metrics for approximately 180 seconds while the drone remains stationary. The main metrics are telemetry receive rate, packet age, packet interarrival gaps, serious gap counts, and telemetry quality. This run serves as the clean reference for later GUI and flight runs; if telemetry is poor here, the GUI should not be blamed first.
+E2 sent one battery query per second for approximately 120 seconds while the drone remained stationary. Three primary and three diagnostic PCAP runs were performed in WSL2, followed by the same six-run structure on native Linux. Primary metrics were per-command median, p95, maximum and steady-state latency, final failures, retries, timeouts, recovered transient events, UDP receive-wait time, and recovery timing.
 
-### 6.4 E4-VIDEO-CLI: Video Baseline Without GUI
+The diagnostic logic was causal. A CSV send attempt without an outgoing packet at the capture point would implicate the application/socket path. An outgoing request with no response would place the loss below or beyond that capture point. A timely captured response accompanied by an API timeout would implicate socket ownership, receive synchronization, parsing, or executor logic. Because a WSL-interface capture is above the physical Windows Wi-Fi adapter, it cannot by itself prove over-the-air transmission; the native physical-interface captures remove that specific ambiguity.
 
-The video baseline measures FFmpeg Stream behavior without Qt display overhead. The CLI enters SDK mode, sends `streamon`, opens the FFmpeg UDP stream, records decoded-video metrics for approximately 120-180 seconds, and sends `streamoff` at shutdown. The drone is kept stationary with the camera facing a well-lit scene. The main metrics are video age, video quality, decoded FPS, decoder errors, frame size, and recovery fields if a stall occurs. This establishes whether the stream and decoder are healthy before the Control Panel is added.
+### 6.4 E3: Telemetry Baseline
 
-### 6.5 E5-GUI-VID-IDLE: Control Panel Stationary Baseline
+E3 recorded the asynchronous state stream for 150 seconds without FFmpeg or Qt. WSL2 primary and diagnostic runs were retained, and three native primary runs were added. Metrics included receive-rate EMA, packet age, interarrival median/p95/maximum, gaps above 300/500/1000 ms, invalid packets, receiver timeouts/errors, and OK/DEGRADED/STALE proportions. The purpose was to test whether the E2 problem represented a link-wide interruption or a command-path/environment effect.
 
-The stationary GUI baseline measures the final Control Panel under normal non-flight operation. The operator launches the panel, connects SDK mode, configures GUI metrics and state CSV export, starts recording, confirms that FFmpeg video is active after connection, leaves the drone stationary for approximately 2-3 minutes, then stops video if needed, stops recording, and exports the CSV files. This run exercises telemetry display, FFmpeg video display, GUI timers, logging, state recording, and CSV export. The main metrics are telemetry/video quality, decoder FPS, GUI vision tick delay, state/plot tick delay, vision refresh duration, plot paint time, command mutex wait time, and state recording gaps.
+### 6.5 E4: Native CLI Video Baseline
 
-### 6.6 E6-KBD-PROFILE: Keyboard Profile Validation
+E4 added FFmpeg decoding while still excluding Qt. Three 150-second native runs recorded frame dimensions, decoded frames, keyframes, decoder rate, frame age, continuity labels, decoder errors, telemetry freshness under video load, and any recovery action. This separates decoder/transport behavior from GUI rendering overhead.
 
-The keyboard profile validation is a no-flight experiment. The operator creates or selects a keyboard profile, sets a low aggression value such as 20, maps keys to RC actions, saves the profile, restarts the panel, and confirms that the profile name, aggression, and mappings persist. No non-neutral RC should be sent unless keyboard control is explicitly enabled. This validates the configurability of the keyboard-control feature before using it in flight.
+### 6.6 E5: Native GUI and Video at Idle
 
-### 6.7 E7-KBD-RESPONSE: Keyboard RC Safety And Flight Response
+E5 ran the complete Qt Control Panel with telemetry, video, plot refresh, and state recording while the drone remained stationary. Three GUI metrics CSVs were paired with three state recordings. The analysis covered telemetry/video age and quality, decoder FPS/errors, vision and state timer delays, refresh/conversion/scaling/paint time, frame and command mutex wait, UI frame accounting, and state-recording inter-sample gaps.
 
-The keyboard flight test is the main real-operation experiment. The operator starts the Control Panel, connects SDK mode, starts GUI and state recording, confirms that FFmpeg video is active, confirms the keyboard profile and aggression, performs takeoff, enables keyboard control, executes short RC pulses, disables keyboard control, lands, stops video if needed, and exports the recordings. The commanded pulses include short up/down and yaw movements, with optional forward/back and left/right pulses only if the space is safe.
+### 6.7 E6: Grounded RC Safety
 
-This experiment sends `command`, `streamon`, `takeoff`, repeated keyboard-generated `rc a b c d`, neutral `rc 0 0 0 0` when no mapped key is pressed, `land`, and `streamoff`. It evaluates whether RC commands are sent at a safe cadence, whether RC returns to neutral after key release, whether the drone responds physically in telemetry, and whether telemetry/video remain fresh while the drone is airborne. The main evidence comes from RC channel logs, RC timestamps, height and time-of-flight response, yaw response, telemetry quality, video quality, decoder FPS, GUI timing, and command mutex wait time.
+E6 enabled the keyboard RC worker without takeoff. Neutral output was recorded before and after short pulses on each mapped direction. The experiment measured deduplicated RC cadence, maximum packet gap, pulse duration, return-to-neutral delay, channel values, blackout count, link quality, safety overrides, and whether any nonzero command occurred while `safe_for_nonzero_rc` was false.
 
-### 6.8 E8-PWR-CYCLE: Power-Cycle Recovery
+### 6.8 E7: Combined Flight and Dynamic Response
 
-The power-cycle experiment validates recovery after the drone restarts while the host process remains running. The CLI starts video watch, enters SDK mode, sends `streamon`, and records video/recovery metrics. After the stream is running, the drone is powered off, left off briefly, powered on again, and the computer reconnects to the Tello Wi-Fi network if needed. The process is left running so the recovery logic can detect the stalled session, probe the command channel, re-enter SDK mode, send `streamon`, and restart the local video pipeline if needed. The main metrics are recovery stage, recovery result, hard-recovery flag, command-channel availability, video age, video quality, and outage counters.
+E7 was the full-system flight experiment. Each repetition recorded takeoff, hover, short pulses in vertical, yaw, forward/back, and lateral directions, neutral intervals, landing, telemetry-confirmed touchdown, video, GUI timing, and link/RC safety.
 
-### 6.9 E9-WIFI-LOSS: Command Reconnect Diagnostic
+Dynamic response was estimated by grouping consecutive nonzero RC samples into pulses. Latency was measured from pulse onset to the first later telemetry sample crossing a conservative expected-direction threshold: 5 cm in `h` or `tof` for vertical motion, 3 degrees in yaw, and 2 degrees in roll/pitch for lateral or forward/back response. Direct `vgx`/`vgy` values remained near zero, so roll and pitch are attitude-response proxies rather than translational displacement. At approximately 10 Hz telemetry, these values are quantized upper-bound observations; they are not a fitted vehicle model or motion-capture ground truth.
 
-The Wi-Fi-loss run is a command-channel reconnect diagnostic. The CLI runs command watch for approximately 120 seconds. After the run has started, the operator disconnects from the Tello Wi-Fi network for several seconds, reconnects, and lets the run finish. The main metrics are command failures, latest command result, connection state, command latency, and outage counters. This experiment is weaker than a full power-cycle recovery test, but it provides focused evidence for command-channel behavior during a Wi-Fi interruption.
+### 6.9 E8: Drone Power-Cycle Recovery
+
+E8 left the video-watch process running while the drone was powered off and restarted. Recovery success required restoration of the command channel, fresh telemetry, decoded video, and a final CONNECTED/OK/OK/OK state. Times were measured from the first non-OK link sample to each restored channel. Recovery stages, timeout rows, and the hard-recovery flag were retained rather than reporting only the successful endpoint.
+
+### 6.10 E9: Host Wi-Fi Loss
+
+E9 kept the drone powered while the host temporarily left and rejoined the Tello network. The command-only watch process was not restarted. The primary endpoint was the first successful command after the LOST event, together with failed commands, timeouts, connection-state transitions, outage count, and final command result.
+
+### 6.11 E10: ROS2 Acceptance
+
+E10 specifies an end-to-end acceptance run for the driver ownership model, telemetry/video/link-quality publishers, command services, RC input, and ROS-mode Control Panel. The software implementation is described in Section 4.7. However, no CSV, rosbag, launch transcript, or other structured E10 artifact was retained with the final experiment evidence, so the report does not assign quantitative ROS2 acceptance results.
 
 ## 7. Results
 
-The final experiments produced a complete set of command, telemetry, video, GUI, keyboard RC, and recovery logs. The most important quantitative findings are summarized below.
+### 7.1 WSL2 Command Delay and Native-Linux Resolution
 
-The figures in this section use the curated final experiment set: one smoke command run, one command-baseline run, one telemetry-only run, one CLI video run, one idle Control Panel run, one keyboard-flight run, one power-cycle recovery run, and one Wi-Fi-loss diagnostic run. 
+All WSL2 E2 runs completed without a final public-command failure, but every one contained a recovered multi-attempt interruption. Routine per-run medians were approximately 32-34 ms and steady p95 values 36-38.5 ms. Diagnostic captures showed blackout windows of 2.401-3.180 seconds: outgoing requests remained visible at the WSL capture interface while incoming command responses were absent, after which SDK recovery restored operation. This rules out failure to call the UDP send path, but the WSL capture position cannot distinguish Hyper-V/NAT, Windows firewall or Wi-Fi management, the Windows driver, radio loss, or temporary drone silence.
 
-| Experiment | Key Result |
+The native result changed both routine performance and failure behavior. Across three primary and three captured native runs, all 708 command samples succeeded with zero retry, timeout, recovery, or multi-attempt command. Every physical-interface PCAP contained 119 outgoing requests and 119 matching responses. Per-run medians were 19 ms and steady p95 values 21-22 ms. Captured and uncaptured native groups were nearly identical, so packet capture did not materially change routine latency.
+
+![WSL2 and native E2 comparison](../results/final_repeated/analysis_images/e2_wsl_vs_native_comparison.png)
+
+The disappearance of the periodic event in all six native runs strongly associates it with the removed WSL2/Windows path or another environment-linked condition. It substantially reduces the likelihood of a deterministic defect in the shared C++ executor or a deterministic approximately 60-second Tello behavior. The experiment does not name one exact Windows/WSL component because synchronized Windows WLAN, firewall, driver, and physical-adapter evidence was not collected.
+
+### 7.2 Telemetry Continuity Across Environments
+
+E3 showed that telemetry remained continuous in both environments. The native group collected 4,450 valid packets with no invalid packets, receiver timeouts/errors, gaps of 300/500/1000 ms, or non-OK rows. The mean of per-run median rates was 9.88 Hz; mean median age was 50.67 ms, mean p95 age 95.53 ms, mean p95 interarrival 103.73 ms, and mean maximum interarrival 154.67 ms.
+
+The WSL2 primary group likewise had zero qualifying gaps and zero non-OK rows, with a 9.74 Hz mean median rate, 49.00 ms mean median age, 97.80 ms mean p95 age, 104.33 ms mean p95 interarrival, and 155.67 ms mean maximum interarrival. The small differences do not indicate a materially different telemetry process. E3 therefore narrows the reason for abandoning WSL2 to the command-channel evidence rather than a general telemetry regression.
+
+![E3 WSL2 and native telemetry](../results/final_repeated/analysis_images/e3_wsl_vs_native_telemetry.png)
+
+### 7.3 Native FFmpeg Video Baseline
+
+All E4 runs decoded 960×720 video near 30 fps. R01-R03 recorded 4,477, 4,493, and 4,503 frames and 150, 150, and 151 keyframes. Across runs, frame count averaged 4,491.0 (SD 13.12) and per-run decoder-FPS median averaged 29.997 (SD 0.002). Frame-age median averaged 15.67 ms, p95 29.53 ms, and maximum 35.0 ms.
+
+All classified video rows were OK. Decoder error counters were 0, 15, and 1, confined to stream acquisition and not growing afterward. Telemetry remained continuous under video load, with zero 300/500/1000 ms gaps and mean p95 age 93.27 ms. No recovery or E4 diagnostic PCAP was triggered.
+
+![Native E4 video continuity](../results/final_repeated/analysis_images/e4_native_video_continuity.png)
+
+### 7.4 GUI Workload
+
+E5 maintained telemetry and video at OK in every sampled row. Decoder medians were 29.999-30.002 fps; telemetry-age p95 was 95.5-98.0 ms and video-age p95 31-32 ms. Vision and state timer p95 values were 125 and 250 ms, matching their configured periods. Vision refresh p95 was 2 ms, scaling p95 1 ms, and frame/command mutex-wait p95 values were 0 ms.
+
+State recording remained near 9.95-9.96 Hz with no sequence gaps. Maximum inter-sample gaps were 155, 212, and 155 ms. UI accounting displayed 88.12-90.44% of converted frames and reported 3,635-4,234 dropped display opportunities; these drops did not correspond to stale transport or decoder interruption.
+
+![E5 GUI and video](../results/final_repeated/analysis_images/e5_gui_idle_analysis.png)
+
+### 7.5 Grounded RC Safety
+
+Each E6 run contained eight nonzero pulses. Deduplicated RC cadence had a 100 ms median, 101 ms p95, and 151 ms maximum. All pulses returned to neutral within 101-151 ms. There were no RC blackouts, safety overrides, unsafe nonzero commands, or non-OK link rows.
+
+Pulse medians were 125.5 ms in R01 and 401 ms in R02/R03. Thus R02/R03 approximated the intended 500 ms operator hold more closely, while R01 tested shorter pulses. The CSV identifies keyboard-neutral and keyboard-worker sources, but records the profile as Default rather than the protocol's KeyboardTest name; aggression and mappings were not exported and cannot be independently verified. Recorded durations were approximately 97-105 seconds rather than the nominal 120 seconds.
+
+![E6 RC magnitude and neutral return](../results/final_repeated/analysis_images/e6_rc_idle_analysis.png)
+
+### 7.6 Flight Operation and Dynamic Response
+
+All E7 runs show telemetry-confirmed takeoff, an OK landing command, and terminal height/ToF consistent with touchdown. Telemetry and video were OK throughout all three runs. Decoder medians were approximately 30 fps, GUI vision timer p95 was 125 ms, command-mutex p95 was 0 ms, and no unsafe nonzero RC or safety override occurred. R01 alone contained two non-OK aggregate-link samples; neither coincided with unsafe nonzero output.
+
+RC cadence remained centered at 100 ms. Per-run p95/maximum gaps were 130.4/200, 150/250, and 101/201 ms. Telemetry-derived takeoff occurred at 7.59, 6.07, and 6.78 seconds, and touchdown at 97.28, 102.44, and 122.76 seconds.
+
+![E7 complete repeated-flight state matrix](../results/final_repeated/analysis_images/e7_all_state_subplots_repeated.png)
+
+The state matrix overlays all three repetitions relative to takeoff and exposes the principal attitude, velocity, height/ToF, barometer, battery, temperature, and acceleration measurements in one figure. It also makes the limitation of the SDK horizontal velocity fields visible: `vgx` and `vgy` remained close to zero even when attitude changed.
+
+The conservative pulse-response detector produced:
+
+| Axis | Proxy | Detected/total pulses | Median detected latency | Range |
+|---|---|---:|---:|---:|
+| left/right | roll | 2/12 | 409.5 ms | 407-412 ms |
+| forward/back | pitch | 4/12 | 470.0 ms | 341-614 ms |
+| up/down | height/ToF | 6/13 | 713.0 ms | 24-1,044 ms |
+| yaw | yaw | 12/12 | 371.5 ms | 317-447 ms |
+
+![E7 estimated response latency](../results/final_repeated/analysis_images/e7_rc_response_latency_repeated.png)
+
+![E7 command-aligned transient responses](../results/final_repeated/analysis_images/e7_command_aligned_dynamics.png)
+
+Yaw provides the strongest repeated evidence because every pulse crossed the direct yaw threshold. Roll/pitch detection is sparse, so those results show first observable attitude response only and should not be generalized as translational latency. A pulse that did not cross a threshold is not proof that the drone did not move; it means the recorded proxy did not satisfy the conservative criterion within the pulse plus 750 ms window. Vertical results are direct but more variable because height and ToF are discrete, noisy, and sampled asynchronously.
+
+### 7.7 Recovery
+
+E8 recovered in 3/3 power-cycle trials. Command restoration occurred 18.236-18.263 seconds after outage onset, telemetry at 19.237-19.263 seconds, and video at 19.263-20.238 seconds. Every run recorded two TIMEOUT recovery rows before OK, traversed `power_command` then `power_streamon`, set the hard-recovery flag, and ended CONNECTED/OK/OK/OK.
+
+![E8 recovery milestones](../results/final_repeated/analysis_images/e8_power_cycle_recovery.png)
+
+E9 also recovered in 3/3 host-Wi-Fi trials. The first successful command followed the LOST event after 19.425, 19.455, and 10.276 seconds. R01/R02 each recorded four failed-command rows including two timeouts; R03 recorded two errors and no timeout. Every run recorded one LOST event, traversed CONNECTED → RECOVERING → CONNECTED, and ended with command result OK. Telemetry/video were NO_DATA by design because E9 used command-only watch mode.
+
+![E9 command reconnection](../results/final_repeated/analysis_images/e9_wifi_reconnect.png)
+
+E8 ran for approximately 84 seconds rather than the nominal 180 seconds and E9 for approximately 81-82 seconds rather than 120 seconds. The recovery endpoints were reached in every recorded window, but the runs do not establish long post-recovery endurance.
+
+### 7.8 Result Summary
+
+| Experiment | Final evidence |
 |---|---|
-| `E2-CMD-BASE` | 119.5 s command baseline, 0 final command failures, 2 recovered transient command outages |
-| `E3-STATE-CLI` | telemetry-only baseline ended with telemetry quality `OK` |
-| `E4-VIDEO-CLI` | FFmpeg Stream video ended with video quality `OK`, decoder FPS about 31.3 |
-| `E5-GUI-VID-IDLE` | valid idle GUI run; no RC commands; telemetry/video quality `OK/OK` |
-| `E7-KBD-RESPONSE` | repeated keyboard-flight run with telemetry/video quality `OK/OK`, decoder FPS about 33.7, and measurable RC response on vertical, yaw, roll, and pitch proxies |
-| `E8-PWR-CYCLE` | 8 recovery rows, successful `power_streamon` recovery |
-| `E9-WIFI-LOSS` | 38 rows, 4 command failures, final command result `OK` |
-
-### 7.1 Command Channel
-
-The command baseline measured SDK command behavior in a stable connection scenario. The run completed with 113 successful commands and no final command failures. Normal command samples had a median latency of approximately 13 ms and a filtered mean of approximately 22.5 ms when recovered outliers above 500 ms were excluded. The cumulative average including recovered transient outliers was higher, approximately 65.7 ms, because two command samples included delayed UDP response/recovery behavior. These recovered outliers occurred near 59.1 s and 119.5 s. This indicates that the normal command path is fast, while occasional transport outages can temporarily dominate the average without causing final command failure.
-
-The command-latency figure focuses on two views: individual command samples and the running average after excluding samples above 500 ms. The first `battery?` sample in this run was higher than the steady-state samples, around 84 ms, while most later normal samples were much lower. This should be interpreted as first-command or warm-up overhead plus running-average convergence, not as evidence that every command continuously became faster.
-
-![Command latency](images/e2_command_latency.png)
-
-Additional diagnostic runs investigated periodic command-latency spikes observed during repeated `battery?` queries. The internal timing metrics showed that the spikes were dominated by accumulated UDP receive wait time. In the final command-baseline run, the two long command samples had `command_executor_recv_wait_total_ms` around 2.2 seconds, `command_executor_calls` equal to two, and `command_recovery_count` equal to one, while the final high-level command result was still `OK`. The internal attempt log showed that each event contained three timed-out `battery?` attempts, one successful SDK recovery command, and then a successful `battery?` retry. This indicates that the client sent a query, did not receive a response before the SDK timeout, performed retry/recovery, and then received a valid response.
-
-To verify whether this was caused by the API or by the network path, the command baseline was repeated while capturing UDP traffic with `tcpdump`. The packet capture showed the same behavior externally. Around one transient event, `battery?` packets were sent repeatedly without a timely response; recovery then sent `command`, the drone replied `ok`, and the next `battery?` returned normally. Around another event, a `battery?` response arrived after the SDK timeout window, which explains why the API had already treated the attempt as failed. Therefore, the evidence indicates a real transient UDP transport outage or delayed drone response, not local CPU load, GUI rendering, parsing overhead, mutex blocking, or the API failing to read a response that had arrived on time.
-
-This result motivated the `TRANSIENT_LOSS_RECOVERED` event classification. A recovered transient outage is different from a persistent connection loss: it is important for diagnostics and future control design, but it should not be logged as if the command channel remained disconnected after the call.
-
-### 7.2 Telemetry
-
-Telemetry quality remained generally healthy across the core experiments. In this report, quality means transport freshness and continuity, not subjective signal quality. `OK` means the latest telemetry packet age is at most 200 ms and the packet interarrival time is at most 300 ms. `DEGRADED` means the latest packet age is at most 500 ms and interarrival is at most 500 ms. `STALE` means data is older than those limits, and `NO_DATA` means no packet was received.
-
-Telemetry age is important because stale telemetry would be unsafe for future feedback control. Packet age is the age of the latest known telemetry sample at the time of measurement. Packet interarrival is the spacing between consecutive telemetry packets. The analysis therefore plots packet age directly, and the timeline view shows how packet age and packet interarrival evolve during each run relative to the `OK`, `DEGRADED`, and `STALE` thresholds. The power-cycle run is shown separately in the timeline because intentionally powering off the drone creates a large age spike that would otherwise compress the other traces.
-
-![Telemetry age](images/telemetry_age_comparison.png)
-
-![Telemetry freshness timeline](images/telemetry_freshness_timeline.png)
-
-### 7.3 Video Performance
-
-The FFmpeg Stream path achieved usable real-time video performance. The CLI video baseline ended with video quality `OK` and decoder FPS around 31.3. The idle Control Panel run ended around 31.6 FPS, and the repeated keyboard-flight run ended around 33.7 FPS while also maintaining video quality `OK`. As with telemetry, video quality here means stream freshness and continuity: recent decoded frames with acceptable interarrival are `OK`; delayed frames are `DEGRADED`; stale or missing frames are represented as `STALE` or `NO_DATA`.
-
-![Video FPS](images/video_decode_fps_comparison.png)
-
-![Video quality](images/video_quality_comparison.png)
-
-These results support the decision to use FFmpeg Stream as the project's only video runtime path.
-
-### 7.4 GUI Responsiveness
-
-The Control Panel was tested in idle video operation and during keyboard flight. GUI timing metrics distinguish event-loop scheduling delay from the actual cost of refreshing video and drawing plots. The reference periods are approximately 120 ms for the vision refresh timer and 250 ms for the state/plot refresh timer.
-
-The repeated keyboard-flight run was used to check whether moving critical commands into a background command worker removed the GUI stalls observed earlier. The result was positive: the vision timer stayed near its expected period with median 125 ms, p95 125 ms, and maximum 148 ms. The state/plot timer stayed near its expected period with median 249 ms, p95 250 ms, and maximum 253 ms. `command_mutex_wait_ms` remained 0 ms, which indicates that GUI refresh paths were not waiting on the command mutex.
-
-The SDK response behavior was still imperfect. In the repeated run, `takeoff` was logged as `TIMEOUT`, while `land` returned `OK`. However, this timeout no longer froze the Control Panel. This distinction is important: the background worker does not make the drone SDK response model more reliable, but it prevents SDK timeout behavior from blocking the Qt event loop.
-
-![GUI tick delay](images/gui_tick_delay_idle_vs_flight.png)
-
-The idle GUI run maintained video and telemetry freshness, but timing metrics remain important because manual control safety depends on avoiding long UI stalls.
-
-### 7.5 Keyboard RC Flight
-
-The keyboard flight experiment is the main real-operation test. During this run, the drone was airborne, video was active, telemetry was logged, and keyboard-generated RC commands were sent by the dedicated RC worker.
-
-The height and vertical RC plot separates the physical height readings from the operator's vertical RC command. The takeoff and landing markers are estimated from telemetry rather than from delayed command log rows. The physical takeoff marker is the first sustained increase in SDK height or time-of-flight distance, and the landing marker is the beginning of the final sustained descent toward the ground. In the repeated E7 run, telemetry indicates a physical takeoff marker around 16.0 s and a landing-start marker around 187.7 s. The logged `takeoff` command row appears later than the physical takeoff marker, so this run is useful for GUI and RC behavior, but not for attributing physical takeoff timing directly to the logged `takeoff` command row.
-
-![E7 height and vertical RC](images/e7_height_and_vertical_rc.png)
-
-The state log confirms a real flight and shows the evolution of attitude, velocity, height, barometer, acceleration, battery, and temperature. The subplot matrix focuses on the flight window, from approximately 7 seconds before the telemetry-estimated takeoff start to approximately 7 seconds after the telemetry-estimated landing start. Acceleration fields are reported in thousandths of gravity (`0.001g`), as exposed by the Tello SDK.
-
-![E7 drone state subplots](images/e7_drone_state_subplots.png)
-
-The RC channel plot shows the keyboard-generated control commands over time.
-
-![E7 RC channels](images/e7_rc_channels.png)
-
-During the same flight, telemetry and video freshness stayed `OK`, and decode FPS remained around 33.7 FPS by the end of the run. This indicates that the system could maintain video, telemetry, and RC operation simultaneously in this test.
-
-![E7 operation quality and video](images/e7_operation_quality_video.png)
-
-The RC response-latency estimate was computed from the keyboard-flight state data. Consecutive non-zero RC samples were grouped into command pulses. For each pulse, the command timestamp was taken from the monotonic RC command timestamp, and the response timestamp was the first later telemetry sample that crossed a channel-specific threshold.
-
-The most direct estimates are vertical and yaw. For vertical pulses (`rc_c != 0`), response was detected when `h` or `tof` changed by at least 5 cm in the expected direction. For yaw pulses (`rc_d != 0`), response was detected when yaw changed by at least 3 degrees in the expected direction. Lateral and forward/backward translation could not be measured directly from `vgx` and `vgy` in this run because those SDK velocity fields stayed close to zero. Instead, left/right (`rc_a`) was estimated from roll response, and forward/back (`rc_b`) was estimated from pitch response, using a 2-degree attitude threshold. These are therefore attitude-response estimates, not direct displacement measurements.
-
-The repeated E7 run produced the following estimated response latencies:
-
-| RC channel | Motion | Telemetry proxy | Valid pulses | Median | Mean | Range |
-|---|---|---|---:|---:|---:|---:|
-| `rc_a` | left/right | roll attitude | 4/7 | 358 ms | 356 ms | 293-413 ms |
-| `rc_b` | forward/back | pitch attitude | 5/12 | 361 ms | 378 ms | 305-514 ms |
-| `rc_c` | up/down | height/time-of-flight | 14/14 | 638 ms | 619 ms | 399-820 ms |
-| `rc_d` | yaw | yaw attitude | 9/9 | 411 ms | 488 ms | 303-923 ms |
-
-Each point in the reaction plot represents one detected RC pulse. Blue points indicate positive RC commands and orange points indicate negative RC commands. The horizontal marker shows the median for each channel.
-
-![E7 RC reaction latency](images/e7_rc_reaction_latency.png)
-
-### 7.6 Recovery
-
-The power-cycle experiment validated recovery after the drone restarted while the process remained running. The run captured recovery rows including a successful `power_streamon` stage.
-
-![E8 power-cycle quality](images/e8_power_cycle_quality.png)
-
-The data-age plot shows how video and telemetry became stale during the outage and then returned to healthy values after recovery.
-
-![E8 power-cycle age](images/e8_power_cycle_age.png)
-
-The Wi-Fi loss experiment validated command-channel reconnect behavior. The run produced command failures during the outage but ended with command result `OK`, indicating that reconnect behavior restored the SDK command path.
-
-![E9 Wi-Fi reconnect](images/e9_wifi_loss_reconnect.png)
+| E1 | Both retained smoke gates passed without retry, timeout, or failure |
+| E2 | WSL2 interruption in every run; 708/708 native commands without retry/timeout/recovery |
+| E3 | No gap ≥300 ms or non-OK row in WSL2 or native groups |
+| E4 | 960×720 at approximately 30 fps; video and telemetry continuous |
+| E5 | Full GUI workload without stale transport or mutex contention |
+| E6 | 100 ms median RC cadence, bounded neutral return, no unsafe nonzero RC |
+| E7 | Three completed flights; fresh telemetry/video; direct yaw and vertical response evidence |
+| E8 | 3/3 full command/telemetry/video recoveries |
+| E9 | 3/3 command reconnects after host Wi-Fi loss |
+| E10 | Implementation exists, but no structured acceptance artifact was retained |
 
 ## 8. Discussion
 
-The results show that the core command, telemetry, video, and GUI components are functional under real-drone conditions. The baseline command experiment suggests that normal SDK queries are reliable under stable Wi-Fi. Telemetry remains fresh enough for monitoring, and the FFmpeg Stream backend provides usable video performance for live operation.
+The experimental sequence supports the architectural decision to place drone communication in one reusable core. E2 is the strongest diagnostic result: identical application behavior was not observed across operating environments. Complete native physical-interface request/response pairs and the absence of all native retries substantially reduce the probability of a deterministic executor defect. At the same time, the experiment does not overclaim an exact WSL2 subcomponent because the original WSL capture was not at the Windows physical adapter.
 
-The most important implementation decision in the video subsystem was standardizing on FFmpeg Stream. By allowing FFmpeg to own UDP stream reading, H264 parsing, decoding, and frame timing, the application avoids maintaining a fragile custom video parser and obtains smoother live video during flight.
+E3 adds an important boundary. Telemetry remained healthy under WSL2 even while the command campaign repeatedly exposed synchronous response loss. Therefore, a generic claim that “the entire Wi-Fi link failed every minute” is not supported. The actionable engineering conclusion is narrower: native Linux removed the observed command-path risk and was the appropriate platform for subsequent real-flight evaluation.
 
-Keyboard RC control required special attention because control commands can be safety-critical. The dedicated RC worker reduces the risk that GUI event-loop stalls keep a movement command active longer than intended. The repeated flight experiment showed that RC commands were recorded, non-zero commands were sent, the drone responded physically, and telemetry/video remained `OK`. The strongest physical response evidence came from vertical height/time-of-flight changes and yaw changes; lateral and forward/backward response was visible through attitude proxies.
+E4 and E5 show that FFmpeg and Qt did not reintroduce the blackout. Video decoding remained near 30 fps, telemetry remained fresh, and GUI refresh costs were small relative to timer periods. UI display drops are therefore an application rendering/accounting behavior, not evidence of transport loss.
 
-The command-channel packet-capture diagnosis also has implications for RC control. Query commands such as `battery?` wait for a response, so a delayed or missing UDP response appears as a timeout, retry, or recovered transient outage. RC commands are different: they are sent continuously through a no-wait path. A single lost RC packet is usually harmless because the dedicated worker sends another RC command shortly afterward. A longer UDP outage is more important. If the last RC command received by the drone was nonzero and neutral `rc 0 0 0 0` packets are delayed or lost, the drone may continue the previous motion until it receives a newer RC command. This is why the implementation emphasizes an independent RC worker, repeated neutral output when no input is active, stale-input detection, and high-priority neutral RC before critical commands. Future closed-loop control should treat command-channel freshness as a safety signal, not only as a logging metric.
+E6 and E7 connect communication quality to safety. The independent RC worker maintained approximately 100 ms cadence and returned to neutral without unsafe nonzero output. Since RC is a no-wait stream, repeated output and neutral fallback matter more than acknowledgment latency for each packet. A long network outage can still delay neutral delivery, so the aggregate link state and `safe_for_nonzero_rc` flag should gate future autonomous commands.
 
-To support this, the core metrics layer exposes an aggregate link-quality state. This state combines telemetry freshness, video freshness when video is active, command/keepalive health, and RC packet cadence while RC control is active. It reports `OK`, `DEGRADED`, `STALE`, `BLACKOUT`, or `NO_DATA`, together with a numeric score and a conservative `safe_for_nonzero_rc` flag. The Qt Control Panel displays this quality at the top of the application, and the ROS driver publishes the same signal as `/tello/link_quality`.
+The dynamic-response analysis is deliberately conservative. The Tello telemetry rate, quantized height/ToF, and nearly uninformative horizontal velocity fields prevent high-fidelity system identification. Yaw response is repeatable, vertical response is observable but variable, and horizontal results are limited to attitude proxies. These data are sufficient to demonstrate command-to-motion correspondence, but not to identify a control-ready dynamic model.
 
-For closed-loop control, this link-quality signal should be treated as a gating input. When quality is `OK`, normal command output can proceed. When quality is `DEGRADED`, a controller should consider reducing command magnitude, increasing neutral-command repetition, or holding the previous safe setpoint only briefly. When quality becomes `STALE` or `BLACKOUT`, the controller should avoid sustained nonzero RC and should prefer neutral RC, hover, landing, or emergency behavior depending on the flight context. The important point is that communication health becomes part of the control decision rather than only a post-run diagnostic.
-
-The GUI timing analysis initially showed that blocking critical command calls could affect responsiveness when their timeout result was logged. To address this, the Control Panel was updated so critical commands and stream/recovery commands run in a background command worker and report results back to the GUI through queued callbacks. The repeated E7 run showed that GUI timer delays remained close to their expected periods even though the `takeoff` command still timed out at the SDK response layer. This confirms the intended separation between command waiting and GUI responsiveness.
-
-Recovery behavior is also important because real Wi-Fi and drone power states are not perfectly stable. The power-cycle experiment showed that the system can detect a stalled video/session state and recover after SDK re-entry and stream restart.
+Finally, E8 and E9 show two different recovery paths: rebuilding a complete command/telemetry/video session after drone restart, and restoring synchronous commands after host Wi-Fi loss. Both succeeded in every recorded trial. The shortened recorded durations limit endurance claims but do not erase the observed recovery milestones.
 
 ## 9. Limitations
 
-The project has several limitations:
+1. The campaign used one DJI Tello, one native host, one adapter, and one physical test environment.
+2. WSL2/native comparison had three primary runs per condition and was not randomized or simultaneous.
+3. Native reproduction identifies an environment-linked cause but not the exact Hyper-V, Windows firewall, WLAN management, or driver mechanism.
+4. E6, E8, and E9 recorded shorter windows than specified by the protocol; E6 profile/aggression/mapping metadata were incomplete.
+5. E7 uses onboard telemetry rather than external motion capture. Horizontal response relies on roll/pitch proxies, and 10 Hz telemetry quantizes latency.
+6. The campaign does not evaluate maximum distance, thermal endurance, subjective image quality, or closed-loop position control.
+7. No structured E10 ROS2 acceptance artifact was retained, so ROS2 runtime performance is not quantified in the results.
 
-1. Experiments were performed with a single DJI Tello drone and one test environment.
-2. Wi-Fi conditions are environment-dependent and may vary across rooms, laptops, and drivers.
-3. The RC reaction latency estimate is based on onboard telemetry, not external motion capture. Lateral and forward/backward response estimates use attitude proxies because direct SDK translational velocity fields did not provide reliable movement evidence in the repeated keyboard-flight run.
-4. The current system does not implement a closed-loop controller.
-5. Thermal behavior can affect long back-to-back experiments.
+## 10. Future Work
 
-## 10. Future Work: ROS2 Validation and Closed-Loop Control
+Future work should prioritize evidence and control readiness rather than adding parallel communication paths:
 
-The ROS2 integration is now implemented as a thin bridge that reuses the core C++ library rather than duplicating command, telemetry, video, or recovery logic. Basic real-drone operation has been validated through the launch path, ROS-mode GUI connection, telemetry, and video. The next stage is to use the bridge as the interface for future robotics experiments and external autonomy nodes.
-
-Future ROS2 work should:
-
-1. run longer end-to-end drone tests using `ros2 launch tello_bringup control_panel.launch.py`;
-2. validate `/tello/cmd_vel` RC mapping against observed drone behavior;
-3. confirm that GUI manual override blocks autonomous `/cmd_vel` until autonomy is explicitly re-enabled;
-4. validate `/tello/link_quality` during telemetry gaps, command timeouts, and RC operation;
-5. test video publication through `/tello/video/image_raw` with ROS visualization or recording tools;
-6. integrate a small external autonomy node that publishes normalized `/tello/cmd_vel`;
-7. use `safe_for_nonzero_rc` as a gating input for any future closed-loop controller.
-
-This future work will move the system from an implemented ROS driver toward a tested robotics platform suitable for future closed-loop control experiments.
+1. repeat E10 with a retained launch transcript or rosbag covering telemetry, video, link quality, services, RC input, and GUI/manual ownership;
+2. record the active keyboard profile, aggression, and mappings directly in experiment metadata;
+3. use external motion capture or vision tracking to estimate translational response and fit a dynamic model;
+4. run randomized native/Windows-side diagnostics only if exact WSL2 root-cause localization remains necessary;
+5. extend E8/E9 post-recovery windows to evaluate session endurance;
+6. gate any future closed-loop controller with `safe_for_nonzero_rc`, freshness, and explicit neutral fallback;
+7. add automated tests for command recovery, UDP loopback, link-quality classification, and CSV schema stability.
 
 ## 11. Conclusion
 
-This project produced a modular C++ communication, telemetry, video, metrics, control, and ROS integration system for the DJI Tello drone. The system includes a reusable core library, command-line tools, a Qt Control Panel, FFmpeg-based video display, CSV experiment logging, configurable keyboard RC control, and a ROS2 bridge.
+The project delivered a modular C++ Tello runtime with reusable command, telemetry, FFmpeg video, metrics, RC safety, Qt operation, recovery, and ROS2 integration components. The repeated campaign evaluated those components incrementally rather than treating a successful flight as sufficient evidence.
 
-Real-drone experiments validated the main engineering claims. The command channel was reliable in the baseline run, telemetry and video freshness remained healthy in core scenarios, FFmpeg Stream provided practical live video performance, keyboard RC control worked during flight, and recovery was demonstrated after a drone power-cycle. The delivered system and this report complete the planned CS 500 implementation and evaluation scope while providing a foundation for deeper ROS2 validation with external autonomy nodes.
+The central investigation resolved the practical deployment question. WSL2 produced a recovered 2.4-3.2 second command interruption in every run, while 708 native command samples completed without retry, timeout, or recovery and native physical-interface captures showed complete request/response pairs. Native telemetry, video, GUI, grounded RC, and flight tests then remained stable under their recorded workloads. Power-cycle and host-Wi-Fi recovery succeeded in all three trials each.
+
+The evidence supports native Linux as the runtime environment for this system. It also supports the core engineering claims: shared communication ownership, diagnosable transport behavior, approximately 30 fps video, responsive GUI scheduling, bounded RC neutral return, observable flight response, and multi-channel recovery. The principal remaining gaps are precise dynamic identification and a retained end-to-end ROS2 acceptance record.
 
 ## Appendix A: DJI Tello SDK Command Summary
 
@@ -730,10 +709,11 @@ Real-drone experiments validated the main engineering claims. The command channe
 | `E3-STATE-CLI` | telemetry freshness without GUI/video load |
 | `E4-VIDEO-CLI` | FFmpeg Stream decode behavior without Qt rendering |
 | `E5-GUI-VID-IDLE` | Control Panel telemetry/video behavior while stationary |
-| `E6-KBD-PROFILE` | keyboard profile persistence and mapping correctness |
+| `E6-RC-IDLE` | grounded RC cadence, channel mapping, neutral return, and safety |
 | `E7-KBD-RESPONSE` | airborne keyboard RC response, video, and telemetry behavior |
 | `E8-PWR-CYCLE` | recovery after drone restart |
 | `E9-WIFI-LOSS` | command-channel recovery after Wi-Fi loss |
+| `E10-ROS-END-TO-END` | ROS2 acceptance procedure; no structured run artifact retained |
 
 ## Appendix C: Build Environment Notes
 

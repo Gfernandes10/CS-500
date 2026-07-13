@@ -451,9 +451,14 @@ void MetricsCollector::setVideoPacketDelta(uint64_t delta) {
 }
 
 void MetricsCollector::updateDecoderStats(const VideoDecodeStats& stats) {
-    // Decode stats are copied from the FFmpeg decoder backend.
+    // Decode stats and cumulative frame metadata are copied from FFmpeg.
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.decoder = stats;
+    if (stats.frame_width > 0 && stats.frame_height > 0) {
+        snapshot_.frame_width = stats.frame_width;
+        snapshot_.frame_height = stats.frame_height;
+    }
+    snapshot_.keyframes = stats.keyframes;
 }
 
 void MetricsCollector::updateFrameInfo(int32_t width, int32_t height, bool keyframe) {

@@ -464,6 +464,9 @@ int main(int argc, char** argv) {
                 decoder_stats.frames_decoded = stream_stats.frames_decoded;
                 decoder_stats.decode_errors = stream_stats.decode_errors;
                 decoder_stats.decode_fps_ema = stream_stats.decode_fps_ema;
+                decoder_stats.frame_width = stream_stats.frame_width;
+                decoder_stats.frame_height = stream_stats.frame_height;
+                decoder_stats.keyframes = stream_stats.keyframes;
 
                 metrics.setElapsedMs(elapsed_ms);
                 metrics.setAttempt(static_cast<uint64_t>(attempt));
@@ -472,7 +475,6 @@ int main(int argc, char** argv) {
                 metrics.updateVideoTransportStats(rx_stats);
                 metrics.setVideoPacketDelta(delta);
                 metrics.updateDecoderStats(decoder_stats);
-                metrics.updateFrameInfo(stream_stats.frame_width, stream_stats.frame_height, false);
                 metrics.recordRecoveryEvent(
                     recovery.attempted,
                     recovery.result,

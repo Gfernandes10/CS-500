@@ -64,6 +64,9 @@ private:
     Stats stats_;
     bool has_last_frame_tp_;
     std::chrono::steady_clock::time_point last_frame_tp_;
+    bool has_fps_window_start_;
+    std::chrono::steady_clock::time_point fps_window_start_;
+    uint64_t frames_since_fps_update_;
 
     mutable std::mutex error_mutex_;
     std::string last_error_;

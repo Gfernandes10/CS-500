@@ -2311,6 +2311,9 @@ private:
         dec_stats.frames_decoded = stream_stats.frames_decoded;
         dec_stats.decode_errors = stream_stats.decode_errors;
         dec_stats.decode_fps_ema = stream_stats.decode_fps_ema;
+        dec_stats.frame_width = stream_stats.frame_width;
+        dec_stats.frame_height = stream_stats.frame_height;
+        dec_stats.keyframes = stream_stats.keyframes;
 
         ++metrics_attempt_;
         updateRuntimeMetricsContext();
@@ -2319,7 +2322,6 @@ private:
         metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(0);
         metrics_.updateDecoderStats(dec_stats);
-        metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
         metrics_.recordRecoveryEvent(
             recovery.attempted,
@@ -3375,6 +3377,9 @@ private:
         dec_stats.frames_decoded = stream_stats.frames_decoded;
         dec_stats.decode_errors = stream_stats.decode_errors;
         dec_stats.decode_fps_ema = stream_stats.decode_fps_ema;
+        dec_stats.frame_width = stream_stats.frame_width;
+        dec_stats.frame_height = stream_stats.frame_height;
+        dec_stats.keyframes = stream_stats.keyframes;
 
         vision_keyframes_.store(stream_stats.keyframes);
         vision_frame_width_.store(stream_stats.frame_width);
@@ -3392,7 +3397,6 @@ private:
         metrics_.updateVideoTransportStats(rx_stats);
         metrics_.setVideoPacketDelta(delta);
         metrics_.updateDecoderStats(dec_stats);
-        metrics_.updateFrameInfo(vision_frame_width_.load(), vision_frame_height_.load(), false);
         metrics_.updateDisplayState(vision_paused_, vision_overlay_enabled_);
         metrics_.setConnectionState(connectionStateToString(client_.getConnectionState()));
         metrics_.setEvent("vision:ffmpeg_stream");

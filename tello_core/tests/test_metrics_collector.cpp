@@ -114,9 +114,10 @@ int main() {
     decoder.frames_decoded = 30;
     decoder.decode_errors = 1;
     decoder.decode_fps_ema = 28.75;
+    decoder.frame_width = 960;
+    decoder.frame_height = 720;
+    decoder.keyframes = 1;
     metrics.updateDecoderStats(decoder);
-
-    metrics.updateFrameInfo(960, 720, true);
     metrics.updateDisplayState(true, false);
     metrics.updatePanelDiagnostics("tof", 3, true);
     metrics.updateGuiPerformance(120, 250, 5, 3, 2, 4, 1, 0, 1, 6, 8, 24, 7, 120);
