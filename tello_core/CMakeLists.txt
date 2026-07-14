@@ -3,6 +3,9 @@ project(tello_core VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+# Register tests before any target calls add_test(). This ordering is required
+# by the CTest version shipped with Ubuntu 20.04 as well as newer releases.
+include(CTest)
 
 # C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -129,9 +132,6 @@ else()
     endif()
     message(STATUS "Qt Widgets not found; using OpenCV fallback for tello_control_panel")
 endif()
-
-# Enable CTest metadata for standalone CMake and colcon test discovery.
-include(CTest)
 
 option(ENABLE_HARDWARE_TESTS "Build and register hardware-dependent tests" OFF)
 

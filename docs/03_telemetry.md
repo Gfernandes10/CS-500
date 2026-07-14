@@ -68,12 +68,12 @@ The core API remains a pull/latest-state-cache model. ROS2 integration adds pub/
 - `cmake --build build`
 
 2. Run offline tests:
-- `ctest --test-dir build -L offline --output-on-failure`
+- `cmake -E chdir build ctest -L offline --output-on-failure`
 
 3. Optional hardware tests can be enabled explicitly when a drone is available:
 - `cmake -S . -B build -DENABLE_HARDWARE_TESTS=ON`
 - `cmake --build build`
-- `ctest --test-dir build -L hardware --output-on-failure`
+- `cmake -E chdir build ctest -L hardware --output-on-failure`
 
 ## Known Limitations
 1. Core consumers still use pull/latest-state access; pub/sub streaming is provided by the ROS layer.

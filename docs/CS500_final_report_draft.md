@@ -364,9 +364,8 @@ cmake --build build/tello_core_standalone
 The offline tests can be run without a drone:
 
 ```bash
-ctest --test-dir build/tello_core_standalone \
-  -L offline \
-  --output-on-failure
+cmake -E chdir build/tello_core_standalone \
+  ctest -L offline --output-on-failure
 ```
 
 For a basic hardware check, power on the Tello, connect the computer to the Tello Wi-Fi network, wait about 10-15 seconds after power-on, and run:
@@ -720,9 +719,8 @@ The project uses CMake and C++17. Video support requires FFmpeg development pack
 The current offline test suite can be executed without a connected drone:
 
 ```bash
-ctest --test-dir build/tello_core_standalone \
-  -L offline \
-  --output-on-failure
+cmake -E chdir build/tello_core_standalone \
+  ctest -L offline --output-on-failure
 ```
 
 The existing offline tests are:
@@ -731,5 +729,6 @@ The existing offline tests are:
 |---|---|
 | `unit_state_parser` | validates parsing of Tello SDK telemetry state packets into structured state fields |
 | `unit_metrics_collector` | validates central metrics aggregation, CSV output behavior, and quality-related metrics used by the experiment logs |
+| `unit_control_panel_offscreen` | starts the Qt Control Panel with the standalone backend using the offscreen platform and verifies clean initialization and shutdown |
 
 These tests cover the telemetry parser promised in the milestone plan and part of the metrics infrastructure used for evaluation. Additional offline tests for command retry behavior, UDP loopback behavior, `StateReceiver` runtime behavior, link-quality classification, and CSV schema stability would further harden the system, but those were not explicitly required as automated tests in the original milestone plan.

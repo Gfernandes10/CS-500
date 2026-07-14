@@ -53,12 +53,11 @@ build/tello_core_standalone/tello_control_panel
 The offline suite does not require a drone:
 
 ```bash
-ctest --test-dir build/tello_core_standalone \
-  -L offline \
-  --output-on-failure
+cmake -E chdir build/tello_core_standalone \
+  ctest -L offline --output-on-failure
 ```
 
-The current tests cover telemetry parsing and central metrics/CSV behavior. Hardware-dependent command tests are disabled by default.
+The current tests cover telemetry parsing, central metrics/CSV behavior, and an offscreen Qt Control Panel smoke test. Hardware-dependent command tests are disabled by default.
 
 ## Connect To The Drone
 
