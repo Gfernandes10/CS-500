@@ -8,7 +8,7 @@
 
 ## Abstract
 
-This project developed and evaluated a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. A reusable core library owns UDP command execution, asynchronous telemetry, FFmpeg video decoding, runtime metrics, recovery, and safety-oriented RC control. Command-line tools and a Qt Control Panel reuse that core for diagnosis, live operation, visualization, CSV recording, and configurable keyboard flight. A ROS2 bridge was also implemented around the released core artifact.
+This project developed and evaluated a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. A reusable core library owns UDP command execution, asynchronous telemetry, FFmpeg video decoding, runtime metrics, recovery, and safety-oriented RC control. Command-line tools and a Qt Control Panel reuse that core for diagnosis, live operation, visualization, CSV recording, and configurable keyboard flight. A ROS2 bridge was also implemented around the same core imported and built from source.
 
 Evaluation used repeated real-drone experiments spanning command latency, telemetry continuity, video decoding, GUI scheduling, grounded RC safety, airborne response, drone power-cycle recovery, and host Wi-Fi reconnection. An initially recurring 2.4-3.2 s command blackout under WSL2 motivated a controlled native-Linux reproduction. Every WSL2 command run contained a recovered interruption, whereas 708 native command samples completed with zero retry, timeout, or recovery and physical-interface captures contained a response for every request. Native telemetry remained near 9.88 Hz without gaps of 300 ms or more; native 960×720 video remained near 30 fps; GUI and flight runs retained fresh telemetry/video; grounded RC returned to neutral without unsafe nonzero output; and all recorded power-cycle and Wi-Fi interruption trials recovered. The results support native Linux as the deployment environment and demonstrate a reusable experimental basis for future closed-loop work.
 
@@ -299,8 +299,8 @@ The main services exposed by the driver are:
 | `/tello/takeoff` | `std_srvs/srv/Trigger` | request takeoff through the ROS command owner |
 | `/tello/land` | `std_srvs/srv/Trigger` | request landing through the ROS command owner |
 | `/tello/emergency` | `std_srvs/srv/Trigger` | request emergency motor stop |
-| `/tello/streamon` | `std_srvs/srv/Trigger` | enable video streaming |
-| `/tello/streamoff` | `std_srvs/srv/Trigger` | disable video streaming |
+| `/tello/stream_on` | `std_srvs/srv/Trigger` | enable video streaming |
+| `/tello/stream_off` | `std_srvs/srv/Trigger` | disable video streaming |
 | `/tello/enable_autonomy` | `std_srvs/srv/Trigger` | allow `/tello/cmd_vel` to control the drone |
 | `/tello/disable_autonomy` | `std_srvs/srv/Trigger` | block autonomous command input |
 | `/tello/gui_command` | `tello_interfaces/srv/Command` | forward a GUI-requested SDK command through the broker |
@@ -311,7 +311,7 @@ The driver also exposes services for connect, disconnect, takeoff, land, emergen
 
 The Qt Control Panel is shared through the ROS-neutral `ControlBackend` contract. The standalone executable `tello_control_panel` injects `StandaloneBackend`, which owns `TelloClient`, `StateReceiver`, FFmpeg, keepalive, and recovery. The ROS executable `tello_control_panel_ros` injects `RosBackend`, which owns only an `rclcpp` node, service clients, publishers, subscribers, and an executor thread. It consumes state, connection, link-quality, runtime-metrics, and video topics, publishes manual RC on `/tello/manual_cmd_vel`, and invokes driver services. Consequently, there is no runtime flag that can accidentally make the standalone executable compete for the ROS driver's UDP sockets.
 
-The ROS launch path was also validated in basic real-drone operation. In this validation, the bringup launch started the driver and Control Panel, the GUI connected to the drone through `/tello/connect`, telemetry and video were visible through the ROS-mode GUI, and the ROS topics and services were available for external inspection and tooling.
+The ROS launch path was also validated in real-drone operation through E10. The observed graph contained exactly the application nodes `/tello/tello_driver_node` and `/tello_control_panel_ros`, in addition to the standard ROS infrastructure. The expected Tello topic surface was discoverable, including state, battery, connection state, diagnostics, link quality, runtime metrics, decoded video, autonomous velocity input, and manual velocity input. The driver exposed connect/disconnect, takeoff/land/emergency, stream on/off, autonomy, and GUI-command services. Two consecutive live `/tello/link_quality` messages reported `overall: OK`, `score: 100`, `safe_for_nonzero_rc: true`, and `telemetry=OK; video=OK; command=OK`. The RC substate was `NO_DATA` with no blackout or safety override because no manual RC input was active during this stationary inspection. This validates live ROS transport through the single-owner driver and shared Control Panel without claiming publish-rate or flight-RC measurements that were not recorded in the terminal run.
 
 ### 4.8 Standalone Build And Operation
 
@@ -485,7 +485,7 @@ The campaign was designed as a sequence of isolation experiments. Each stage add
 | E7 | Add flight dynamics under combined command, RC, telemetry, video, and GUI load |
 | E8 | Test complete session recovery after restarting the drone |
 | E9 | Isolate host Wi-Fi loss without intentionally restarting the drone |
-| E10 | Define end-to-end ROS2 acceptance for the released core and bridge |
+| E10 | Validate end-to-end ROS2 acceptance for the source-built core and bridge |
 
 E2 and E3 were the decision point for the operating environment. The WSL2 command path crossed the Linux UDP socket, WSL virtual networking, Hyper-V/Windows networking, the Windows Wi-Fi stack, and the physical radio. Native Linux removed the virtualized and Windows layers while preserving the C++ client, command interval, drone, and physical adapter. Later experiments were native-only because repeating flight and GUI tests on a platform already associated with periodic command interruption would add risk without answering a new project question.
 
@@ -533,7 +533,7 @@ E9 kept the drone powered while the host temporarily left and rejoined the Tello
 
 ### 6.11 E10: ROS2 Acceptance
 
-E10 specifies an end-to-end acceptance run for the driver ownership model, telemetry/video/link-quality publishers, command services, RC input, and ROS-mode Control Panel. The software implementation is described in Section 4.7. However, no CSV, rosbag, launch transcript, or other structured E10 artifact was retained with the final experiment evidence, so the report does not assign quantitative ROS2 acceptance results.
+E10 performed an end-to-end acceptance run with the real drone connected. The terminal inspection found both expected application nodes, all expected Tello topics, and the complete driver service surface. Consecutive `/tello/link_quality` samples reported an overall score of 100, marked nonzero RC as safe, and classified telemetry, video, and command as OK. `rc: NO_DATA` was expected because the inspection did not send manual RC commands. The run therefore supplies qualitative functional acceptance of the source-built ROS workspace, driver, shared Control Panel, live telemetry/video health, and service/topic exposure. It does not provide quantitative topic rates, callback latency, RC cadence, or recovery measurements because no rosbag or metrics capture was recorded for E10.
 
 ## 7. Results
 
@@ -542,6 +542,22 @@ E10 specifies an end-to-end acceptance run for the driver ownership model, telem
 All WSL2 E2 runs completed without a final public-command failure, but every one contained a recovered multi-attempt interruption. Routine per-run medians were approximately 32-34 ms and steady p95 values 36-38.5 ms. Diagnostic captures showed blackout windows of 2.401-3.180 seconds: outgoing requests remained visible at the WSL capture interface while incoming command responses were absent, after which SDK recovery restored operation. This rules out failure to call the UDP send path, but the WSL capture position cannot distinguish Hyper-V/NAT, Windows firewall or Wi-Fi management, the Windows driver, radio loss, or temporary drone silence.
 
 The native result changed both routine performance and failure behavior. Across three primary and three captured native runs, all 708 command samples succeeded with zero retry, timeout, recovery, or multi-attempt command. Every physical-interface PCAP contained 119 outgoing requests and 119 matching responses. Per-run medians were 19 ms and steady p95 values 21-22 ms. Captured and uncaptured native groups were nearly identical, so packet capture did not materially change routine latency.
+
+The temporal contrast makes the environment difference more visible than aggregate statistics alone. The upper panel contains the six WSL2 runs: every run contains a recovered multi-second delay in the recurring 64.3-65.7 second window. The lower panel contains the six matched native runs: none of 708 samples exceeded 200 ms, including the corresponding 60-66 second interval.
+
+![WSL2 recurring delay and matched native timeline](../results/final_repeated/analysis_images/e2_wsl_native_temporal_contrast.png)
+
+The internal timing decomposition shows that the delayed calls were dominated by accumulated executor receive-wait time. Plotting, CSV formatting, response parsing, and other local overhead account for only a small part of the recurring multi-second calls. Most recurring events required four internal attempts; the high-level `battery?` operation nevertheless returned successfully after SDK recovery. The shorter isolated delays in WSL2 R02 are retained in the figure rather than being removed from the analysis.
+
+![Internal timing of delayed E2 commands](../results/final_repeated/analysis_images/e2_delayed_command_timing.png)
+
+Packet capture provides a second, independent view of the same interruption. For this analysis, outgoing UDP payload length 8 identifies `battery?`, length 7 identifies `command`, incoming length 2 identifies `ok`, and the other short incoming payloads are battery values. The PCAP clock begins at the first captured SDK packet and is slightly offset from CSV elapsed time, so correlation uses event order and blackout duration rather than assuming identical timestamp origins.
+
+All three WSL2 diagnostic captures show `battery?` requests continuing to leave the host while no corresponding incoming value is observed during the shaded interval. Incoming traffic resumes with the SDK recovery exchange and subsequent battery response. D01, D02, and D03 contain request-without-immediate-reply windows of 2.407, 2.401, and 3.180 seconds, respectively. This directly rules out failure by the application to call its UDP send path during the captured events. Because capture occurred at the WSL2 interface rather than the Windows physical Wi-Fi adapter, it does not distinguish loss in WSL/Hyper-V networking, Windows firewall or WLAN management, the Wi-Fi driver, radio transport, or temporary drone silence.
+
+![WSL2 command-channel packets around each E2 interruption](../results/final_repeated/analysis_images/e2_pcap_blackout_timeline.png)
+
+The separate run-level comparison below summarizes ordinary operation rather than transient timing. It shows that native Linux also reduced routine median and steady p95 latency, while retaining each run as the independent unit.
 
 ![WSL2 and native E2 comparison](../results/final_repeated/analysis_images/e2_wsl_vs_native_comparison.png)
 
@@ -616,7 +632,13 @@ E9 also recovered in 3/3 host-Wi-Fi trials. The first successful command followe
 
 E8 ran for approximately 84 seconds rather than the nominal 180 seconds and E9 for approximately 81-82 seconds rather than 120 seconds. The recovery endpoints were reached in every recorded window, but the runs do not establish long post-recovery endurance.
 
-### 7.8 Result Summary
+### 7.8 ROS2 End-to-End Acceptance
+
+E10 passed the recorded functional checks with the drone online. `ros2 node list` showed the sole UDP-owning driver and the ROS Control Panel as separate nodes. The graph exposed nine Tello application topics: battery, autonomous velocity input, connection state, diagnostics, link quality, manual velocity input, runtime metrics, state, and decoded video. It also exposed ten application services: connect, disconnect, takeoff, land, emergency, stream on/off, autonomy enable/disable, and GUI command forwarding. Standard per-node parameter services were present but are not counted as Tello application services.
+
+Two consecutive link-quality messages, one second apart, reported `overall=OK`, `score=100`, `safe_for_nonzero_rc=true`, and OK telemetry, video, and command components. Both showed zero RC blackouts and no RC safety override. The RC component remained NO_DATA because no RC command stream was active, so this observation validates idle online health rather than RC actuation. The evidence demonstrates ROS discovery, live driver publication, source-built GUI integration, and the intended single-owner communication path. Topic frequency, end-to-end command latency, and RC behavior remain outside the quantitative scope of this E10 run.
+
+### 7.9 Result Summary
 
 | Experiment | Final evidence |
 |---|---|
@@ -629,7 +651,7 @@ E8 ran for approximately 84 seconds rather than the nominal 180 seconds and E9 f
 | E7 | Three completed flights; fresh telemetry/video; direct yaw and vertical response evidence |
 | E8 | 3/3 full command/telemetry/video recoveries |
 | E9 | 3/3 command reconnects after host Wi-Fi loss |
-| E10 | Implementation exists, but no structured acceptance artifact was retained |
+| E10 | Functional acceptance passed: expected nodes/topics/services and two live 100/OK link-quality samples |
 
 ## 8. Discussion
 
@@ -645,6 +667,8 @@ The dynamic-response analysis is deliberately conservative. The Tello telemetry 
 
 Finally, E8 and E9 show two different recovery paths: rebuilding a complete command/telemetry/video session after drone restart, and restoring synchronous commands after host Wi-Fi loss. Both succeeded in every recorded trial. The shortened recorded durations limit endurance claims but do not erase the observed recovery milestones.
 
+E10 closes the architectural loop by showing the source-imported core, ROS driver, and shared Control Panel operating together with the real drone. The discovered graph matches the intended ownership model, while the live link-quality messages show that telemetry, video, and command health reached OK through ROS. Since no RC stream or rate measurement was recorded, the result is functional acceptance rather than a ROS performance benchmark.
+
 ## 9. Limitations
 
 1. The campaign used one DJI Tello, one native host, one adapter, and one physical test environment.
@@ -653,13 +677,13 @@ Finally, E8 and E9 show two different recovery paths: rebuilding a complete comm
 4. E6, E8, and E9 recorded shorter windows than specified by the protocol; E6 profile/aggression/mapping metadata were incomplete.
 5. E7 uses onboard telemetry rather than external motion capture. Horizontal response relies on roll/pitch proxies, and 10 Hz telemetry quantizes latency.
 6. The campaign does not evaluate maximum distance, thermal endurance, subjective image quality, or closed-loop position control.
-7. No structured E10 ROS2 acceptance artifact was retained, so ROS2 runtime performance is not quantified in the results.
+7. E10 retained terminal-level functional evidence but no rosbag or rate/latency capture; ROS2 runtime performance and active RC behavior are therefore not quantified.
 
 ## 10. Future Work
 
 Future work should prioritize evidence and control readiness rather than adding parallel communication paths:
 
-1. repeat E10 with a retained launch transcript or rosbag covering telemetry, video, link quality, services, RC input, and GUI/manual ownership;
+1. extend E10 with a rosbag and rate/latency capture covering telemetry, video, services, active RC input, and GUI/manual ownership;
 2. record the active keyboard profile, aggression, and mappings directly in experiment metadata;
 3. use external motion capture or vision tracking to estimate translational response and fit a dynamic model;
 4. run randomized native/Windows-side diagnostics only if exact WSL2 root-cause localization remains necessary;
@@ -673,7 +697,7 @@ The project delivered a modular C++ Tello runtime with reusable command, telemet
 
 The central investigation resolved the practical deployment question. WSL2 produced a recovered 2.4-3.2 second command interruption in every run, while 708 native command samples completed without retry, timeout, or recovery and native physical-interface captures showed complete request/response pairs. Native telemetry, video, GUI, grounded RC, and flight tests then remained stable under their recorded workloads. Power-cycle and host-Wi-Fi recovery succeeded in all three trials each.
 
-The evidence supports native Linux as the runtime environment for this system. It also supports the core engineering claims: shared communication ownership, diagnosable transport behavior, approximately 30 fps video, responsive GUI scheduling, bounded RC neutral return, observable flight response, and multi-channel recovery. The principal remaining gaps are precise dynamic identification and a retained end-to-end ROS2 acceptance record.
+The evidence supports native Linux as the runtime environment for this system. It also supports the core engineering claims: shared communication ownership, diagnosable transport behavior, approximately 30 fps video, responsive GUI scheduling, bounded RC neutral return, observable flight response, multi-channel recovery, and functional end-to-end ROS2 integration. The principal remaining gaps are precise dynamic identification and quantitative ROS2 rate, latency, and active-RC measurements.
 
 ## Appendix A: DJI Tello SDK Command Summary
 
@@ -708,7 +732,7 @@ The evidence supports native Linux as the runtime environment for this system. I
 | `E7-KBD-RESPONSE` | airborne keyboard RC response, video, and telemetry behavior |
 | `E8-PWR-CYCLE` | recovery after drone restart |
 | `E9-WIFI-LOSS` | command-channel recovery after Wi-Fi loss |
-| `E10-ROS-END-TO-END` | ROS2 acceptance procedure; no structured run artifact retained |
+| `E10-ROS-END-TO-END` | real-drone ROS2 acceptance with expected graph and live 100/OK link-quality evidence |
 
 ## Appendix C: Build Environment Notes
 
