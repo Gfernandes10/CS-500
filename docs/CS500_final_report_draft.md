@@ -208,43 +208,66 @@ The initial concern during flight testing was that GUI stalls could cause a move
 
 ROS, the Robot Operating System, is a common middleware framework used in robotics to connect sensors, controllers, planning algorithms, visualization tools, and hardware drivers. Despite its name, ROS is not an operating system in the traditional kernel sense. It provides conventions and libraries for building distributed robot software. In ROS2, independent processes called nodes communicate through typed topics, request/response services, actions, parameters, launch files, and a DDS-based discovery and transport layer. A typical robotics system uses a hardware driver node to publish sensor data and accept commands, while other nodes perform mapping, planning, control, visualization, or logging. Tools such as `ros2 topic echo`, `ros2 service call`, `rqt`, and RViz are then used to inspect and interact with the running graph.
 
-The project includes a separate ROS2 Jazzy integration workspace, prepared as its own GitHub repository rather than as a subdirectory of the academic source tree. It is intentionally separate from the academic project workspace so that the ROS package remains small and runtime-oriented. Documentation, experiment evidence, planning files, and report material are not copied into the ROS package. Instead, the C++ runtime is packaged as a versioned `tello_core` release artifact containing only the installed library, public headers, CLI executable, Qt Control Panel executable, CMake package metadata, and required runtime resources. The ROS workspace consumes that artifact through a `tello_core_vendor` package, which can download a fixed release or install from a local `.tar.gz` file during `colcon build`.
+The project includes a separate ROS2 Foxy integration workspace in its own GitHub repository. The ROS-independent runtime remains in `CS-500`, while the ROS repository contains only interfaces, the broker driver, the ROS GUI backend, and bringup files. A `tello_ros2.repos` manifest imports the `dev` branch of `CS-500`. `colcon` discovers `tello_core/package.xml` as a plain CMake package and compiles the core against the same Ubuntu 20.04, Qt5, FFmpeg, compiler, and glibc environment as the ROS packages. This avoids both ROS dependencies in the core and binary compatibility assumptions between operating-system versions.
 
-The ROS workspace is organized into four packages:
+The resulting workspace is organized around five build units:
 
-1. `tello_core_vendor`, which finds or installs the fixed `tello_core` runtime release;
+1. source-built `tello_core`, which exports the runtime and shared Qt UI without depending on ROS;
 2. `tello_interfaces`, which defines Tello-specific messages and services;
-3. `tello_driver`, which implements the broker node that owns the drone command channel;
-4. `tello_bringup`, which provides launch files for starting the driver and GUI together.
+3. `tello_driver`, which implements the broker node that owns all drone UDP communication;
+4. `tello_control_panel_ros`, which implements `RosBackend` and reuses the exported Qt UI;
+5. `tello_bringup`, which starts the driver and ROS GUI together.
 
-The dependency on the CS 500 core repository is therefore release-based rather than source-tree-based. The ROS repository contains the ROS packages, launch files, interfaces, README, and small runtime configuration files, while generated `build/`, `install/`, and `log/` directories are excluded from version control. The ROS workspace does not need to clone or carry the full academic repository. During development, the vendor package can consume a local release artifact:
+The source dependency is declared explicitly in the workspace manifest:
 
-```bash
-colcon build --cmake-clean-cache --cmake-args \
-  -DTELLO_CORE_VERSION=1.0.0 \
-  -DTELLO_CORE_VENDOR_FORCE_DOWNLOAD=ON \
-  -DTELLO_CORE_RELEASE_URL=file:///home/gabriel_fernandes/CS%20500/tello_core.tar.gz
+```yaml
+repositories:
+  CS-500:
+    type: git
+    url: https://github.com/Gfernandes10/CS-500.git
+    version: dev
 ```
 
-For a published GitHub release, the same package can construct the artifact URL from a version and base release path:
+Starting from a machine with Ubuntu 20.04 and ROS2 Foxy installed, the workspace can be obtained and built from scratch as follows. The first command clones the ROS repository; `vcs import` then places the `CS-500` source tree declared by the manifest under the workspace's existing `src/` directory.
 
 ```bash
-colcon build --cmake-args \
-  -DTELLO_CORE_VERSION=1.0.0 \
-  -DTELLO_CORE_RELEASE_BASE_URL=https://github.com/Gfernandes10/CS-500/releases/download
+sudo apt update
+sudo apt install -y \
+  python3-vcstool \
+  python3-rosdep \
+  build-essential \
+  cmake \
+  pkg-config \
+  libavformat-dev \
+  libavcodec-dev \
+  libavutil-dev \
+  libswscale-dev \
+  qtbase5-dev
+
+git clone https://github.com/Gfernandes10/CS-500---ROS.git
+cd CS-500---ROS
+
+vcs import src < tello_ros2.repos
+source /opt/ros/foxy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build
 ```
 
-After the ROS workspace is built, the application is launched by sourcing ROS2 Jazzy and the workspace install tree, then running the bringup launch file:
+If `rosdep` has not previously been initialized on the machine, `sudo rosdep init` and `rosdep update` must be run once before `rosdep install`. The `dev` branch selection for `CS-500` is stored in `tello_ros2.repos`, so no separate manual clone of the core repository is required.
+
+After the build, the operator powers on the Tello, connects the computer to the drone's Wi-Fi network, sources Foxy and the workspace overlay, and starts the complete application:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/foxy/setup.bash
 source install/setup.bash
 ros2 launch tello_bringup control_panel.launch.py
 ```
 
-This starts both `/tello/tello_driver_node` and the Qt Control Panel in ROS mode. The graph can be inspected with standard ROS tools:
+This starts `/tello/tello_driver_node` and the separate `tello_control_panel_ros` executable. With the default `auto_connect:=false`, the operator completes SDK initialization by pressing `Connect + SDK` in the Control Panel. The graph can be inspected from another terminal after sourcing the same environment:
 
 ```bash
+source /opt/ros/foxy/setup.bash
+source install/setup.bash
 ros2 node list
 ros2 topic list
 ros2 service list
@@ -261,6 +284,7 @@ The ROS interface is summarized below so that the delivered bridge can be inspec
 | `/tello/battery` | published by driver | `std_msgs/msg/Int32` | convenience battery percentage topic |
 | `/tello/connection_state` | published by driver | `std_msgs/msg/String` | SDK connection state for operators and tools |
 | `/tello/link_quality` | published by driver | `tello_interfaces/msg/LinkQuality` | aggregate communication-quality and RC-safety state |
+| `/tello/runtime_metrics` | published by driver | `tello_interfaces/msg/RuntimeMetrics` | telemetry, decoder, video, RC, and keepalive counters used by the shared GUI |
 | `/tello/video/image_raw` | published by driver | `sensor_msgs/msg/Image` | decoded FFmpeg video frames |
 | `/tello/diagnostics` | published by driver | `diagnostic_msgs/msg/DiagnosticArray` | diagnostic status for ROS tooling |
 | `/tello/cmd_vel` | subscribed by driver | `geometry_msgs/msg/Twist` | normalized autonomous velocity command input |
@@ -285,7 +309,7 @@ The link-quality topic exposes the same aggregate safety-oriented state introduc
 
 The driver also exposes services for connect, disconnect, takeoff, land, emergency, stream on, stream off, enabling autonomy, disabling autonomy, and forwarding GUI commands. Command arbitration is deliberately conservative. `/tello/cmd_vel` is accepted only when autonomy is explicitly enabled. Commands originating from the GUI or manual services switch the driver into manual override, block `/tello/cmd_vel`, and execute the requested GUI or service command through the broker. Discrete critical commands such as takeoff, land, emergency, stream on, and stream off can preempt autonomous command flow. Manual RC commands from the GUI are forwarded directly as RC commands and continue to block autonomous `/cmd_vel` until autonomy is explicitly re-enabled. The emergency service has highest priority.
 
-The Qt Control Panel is preserved as the main graphical application. In standalone mode it can still communicate directly with the drone for development. In ROS mode it is launched with `tello_control_panel --ros-mode` and does not own the UDP command channel. Instead, it consumes `/tello/state`, `/tello/battery`, `/tello/connection_state`, `/tello/link_quality`, and `/tello/video/image_raw` from the ROS driver, publishes manual RC input on `/tello/manual_cmd_vel`, and uses ROS services for discrete commands such as connect, takeoff, land, emergency, stream on, and stream off. The launch file `control_panel.launch.py` starts both the broker node and the GUI, producing a single user-facing control panel while keeping command ownership inside ROS.
+The Qt Control Panel is shared through the ROS-neutral `ControlBackend` contract. The standalone executable `tello_control_panel` injects `StandaloneBackend`, which owns `TelloClient`, `StateReceiver`, FFmpeg, keepalive, and recovery. The ROS executable `tello_control_panel_ros` injects `RosBackend`, which owns only an `rclcpp` node, service clients, publishers, subscribers, and an executor thread. It consumes state, connection, link-quality, runtime-metrics, and video topics, publishes manual RC on `/tello/manual_cmd_vel`, and invokes driver services. Consequently, there is no runtime flag that can accidentally make the standalone executable compete for the ROS driver's UDP sockets.
 
 The ROS launch path was also validated in basic real-drone operation. In this validation, the bringup launch started the driver and Control Panel, the GUI connected to the drone through `/tello/connect`, telemetry and video were visible through the ROS-mode GUI, and the ROS topics and services were available for external inspection and tooling.
 
@@ -293,45 +317,17 @@ The ROS launch path was also validated in basic real-drone operation. In this va
 
 The core API can also be used without ROS. In standalone mode, the CLI tools and Qt Control Panel link directly against `tello_core` and communicate with the drone through the SDK UDP channels. This is the mode used for the real-drone experiments in this report.
 
-For users who want to consume the API as a dependency, the preferred distribution path is the versioned release artifact rather than a direct build from the academic source tree. A release contains only the runtime-facing files: public headers, the compiled library, CMake package metadata, runtime resources, and the CLI/Control Panel executables. This allows another C++ or ROS project to depend on a fixed `tello_core` version without copying documentation, experiment evidence, or planning files.
-
-A user can obtain a specific version from the project releases page. The archive name is stable as `tello_core.tar.gz`; the version is selected by the GitHub tag, such as `v1.0.0`, and by downstream build parameters such as `TELLO_CORE_VERSION`. For example, version `1.0.0` can be downloaded and extracted as follows:
-
-```bash
-mkdir -p $HOME/tello_core_releases
-curl -L \
-  -o /tmp/tello_core.tar.gz \
-  https://github.com/Gfernandes10/CS-500/releases/download/v1.0.0/tello_core.tar.gz
-tar -xzf /tmp/tello_core.tar.gz \
-  -C $HOME/tello_core_releases
-```
-
-After extraction, the release directory can be used as an installation prefix:
-
-```bash
-export TELLO_CORE_PREFIX=$HOME/tello_core_releases/tello_core
-export PATH=$TELLO_CORE_PREFIX/bin:$PATH
-export CMAKE_PREFIX_PATH=$TELLO_CORE_PREFIX:$CMAKE_PREFIX_PATH
-```
-
-The command-line tool and Control Panel can then be launched directly from the versioned release:
-
-```bash
-tello_cli --once
-tello_control_panel
-```
-
-A downstream CMake project can consume an installed or extracted release through the exported package:
+The supported distribution path is a source build. This ensures that FFmpeg, Qt5, glibc, and compiler-runtime dependencies match the target Ubuntu system. A downstream CMake project can install the source-built package locally and consume its exported target:
 
 ```cmake
-find_package(tello_core REQUIRED)
+find_package(tello_core REQUIRED CONFIG)
 target_link_libraries(my_app PRIVATE tello_core::tello_core)
 ```
 
-The source-based standalone workflow remains useful for development, auditing, project evaluation, or rebuilding on a different machine. In that case, clone the repository:
+Clone the `dev` branch for development, auditing, project evaluation, or rebuilding on another machine:
 
 ```bash
-git clone https://github.com/Gfernandes10/CS-500.git
+git clone --branch dev https://github.com/Gfernandes10/CS-500.git
 cd CS-500
 ```
 
@@ -396,7 +392,7 @@ The normal standalone Control Panel workflow is:
 7. use the Config tab for SDK commands, speed setting, and keyboard profile setup;
 8. use the Operation tab for live video, state history, manual RC sliders, and keyboard RC control.
 
-In standalone mode the Control Panel owns the command channel directly. If ROS mode is required, the Control Panel should instead be launched through the ROS bringup flow so that the ROS driver node owns the command channel.
+In standalone mode `tello_control_panel` owns the command channel directly. ROS operation uses the distinct `tello_control_panel_ros` executable through bringup, keeping the driver node as the only command owner.
 
 ## 5. Milestone Plan Traceability
 
@@ -408,7 +404,7 @@ An accompanying continuous evidence video is available here: [CS 500 evidence vi
 
 **Planned goal.** Phase 0 was intended to define the project scope, study the DJI Tello SDK, choose technologies, create the source structure, define the core modules, and establish the CMake build system.
 
-**Delivered work.** This phase was delivered. The project scope was defined around a modular C++ Tello communication stack. The architecture separates command, telemetry, video, metrics, GUI, and ROS integration. The implementation uses C++17, CMake, FFmpeg, Qt, and ROS2 Jazzy. The actual source organization evolved from the initial conceptual folders into a reusable `tello_core` package plus a separate ROS2 workspace that consumes a packaged runtime artifact. This preserves the planned modular boundary while keeping academic material, experiments, and reports outside the ROS runtime package.
+**Delivered work.** This phase was delivered. The project scope was defined around a modular C++ Tello communication stack. The architecture separates command, telemetry, video, metrics, GUI, and ROS integration. The implementation uses C++17, CMake, FFmpeg, Qt5, and ROS2 Foxy. The reusable `tello_core` is a ROS-independent CMake package, while a separate ROS2 workspace imports its source and provides the driver and ROS backend. This preserves the modular boundary without relying on precompiled runtime artifacts.
 
 **Evidence included.** The SDK background, system architecture, component descriptions, and implementation sections document the final structure and design decisions. Section 3 includes the final system architecture diagram, showing the DJI Tello drone, UDP command/telemetry/video channels, the reusable `tello_core` layer, CLI tools, Qt Control Panel, metrics layer, and ROS2 bridge. The accompanying evidence video shows the SDK background, architecture diagram, and project structure.
 
@@ -447,9 +443,9 @@ An accompanying continuous evidence video is available here: [CS 500 evidence vi
 
 ### 5.6 Phase 5: ROS Integration
 
-**Planned goal.** Phase 5 was intended to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools. The plan named ROS2 Humble or a compatible ROS2 version; the delivered implementation uses ROS2 Jazzy.
+**Planned goal.** Phase 5 was intended to create a ROS2 package, wrap the core library in a ROS node, publish telemetry and camera data, subscribe to velocity commands, expose takeoff and landing services, and test the bridge with ROS tools. The plan named ROS2 Humble or a compatible ROS2 version; the delivered implementation uses ROS2 Foxy on Ubuntu 20.04.
 
-**Delivered work.** This phase was delivered as a separate ROS2 Jazzy workspace and prepared as an independent GitHub repository. The ROS implementation keeps the ROS layer thin by depending on an installed `tello_core` runtime artifact rather than copying the full academic source tree, documentation, experiment evidence, or planning files into the ROS repository. The workspace includes a vendor package for the core runtime, custom Tello interfaces, a driver node, and bringup launch files.
+**Delivered work.** This phase was delivered as a separate ROS2 Foxy workspace and prepared as an independent GitHub repository. The ROS implementation keeps the ROS layer thin: a `.repos` manifest imports the `dev` branch of the ROS-independent core, while the ROS repository supplies custom interfaces, the sole-owner driver, `RosBackend`, and bringup files. The shared Qt interface is compiled once from source for the target environment and reused by the standalone and ROS executables.
 
 The delivered driver node wraps the existing core library and publishes telemetry, battery, connection state, video frames, diagnostics, and aggregate link quality. It subscribes to normalized velocity commands on `/tello/cmd_vel`, converts them to Tello RC commands, and exposes services for connection management, takeoff, landing, emergency stop, stream control, autonomy enable/disable, and GUI command forwarding. The Qt Control Panel can be launched in ROS mode so that the GUI sends commands through the ROS broker instead of talking directly to the drone. Offline build and interface tests were performed with `colcon build`, `colcon test`, and ROS command-line tools. The launch path was also validated with the real drone by connecting through the ROS service path and confirming ROS-mode telemetry and video in the GUI.
 

@@ -18,7 +18,6 @@ option(TELLO_ENABLE_FFMPEG "Enable FFmpeg video decoder backend when available" 
 option(TELLO_REQUIRE_FFMPEG "Require FFmpeg backend and fail configure if missing" ON)
 option(TELLO_ENABLE_OPENCV_VIEWER "Enable OpenCV rendering support for GUI/fallback tools" ON)
 option(TELLO_ENABLE_QT_CONTROL_PANEL "Enable Qt-based tello_control_panel when Qt Widgets is available" ON)
-option(TELLO_ENABLE_ROS_CONTROL_PANEL "Enable native ROS 2 topic integration in the Qt control panel" OFF)
 
 find_package(PkgConfig QUIET)
 if(TELLO_ENABLE_FFMPEG AND PkgConfig_FOUND)
@@ -87,47 +86,38 @@ add_executable(tello_cli
 target_link_libraries(tello_cli PRIVATE tello_core)
 
 set(TELLO_QT_WIDGETS_TARGET "")
-set(TELLO_ROS_CONTROL_PANEL_DEPS "")
+set(TELLO_HAS_QT OFF)
 if(TELLO_ENABLE_QT_CONTROL_PANEL)
-    find_package(Qt6 QUIET COMPONENTS Widgets)
-    if(Qt6_FOUND)
-        set(TELLO_QT_WIDGETS_TARGET Qt6::Widgets)
-        message(STATUS "Qt control panel enabled with Qt6")
-    else()
-        find_package(Qt5 QUIET COMPONENTS Widgets)
-        if(Qt5_FOUND)
-            set(TELLO_QT_WIDGETS_TARGET Qt5::Widgets)
-            message(STATUS "Qt control panel enabled with Qt5")
-        endif()
+    find_package(Qt5 QUIET COMPONENTS Widgets)
+    if(Qt5_FOUND)
+        set(TELLO_QT_WIDGETS_TARGET Qt5::Widgets)
+        set(TELLO_HAS_QT ON)
+        message(STATUS "Qt control panel enabled with Qt5")
     endif()
-endif()
-
-if(TELLO_QT_WIDGETS_TARGET AND TELLO_ENABLE_ROS_CONTROL_PANEL)
-    find_package(ament_cmake REQUIRED)
-    find_package(rclcpp REQUIRED)
-    find_package(geometry_msgs REQUIRED)
-    find_package(sensor_msgs REQUIRED)
-    find_package(std_msgs REQUIRED)
-    find_package(tello_interfaces REQUIRED)
-    set(TELLO_ROS_CONTROL_PANEL_DEPS
-        rclcpp
-        geometry_msgs
-        sensor_msgs
-        std_msgs
-        tello_interfaces
-    )
-    message(STATUS "Qt control panel native ROS 2 integration enabled")
 endif()
 
 if(TELLO_QT_WIDGETS_TARGET)
-    add_executable(tello_control_panel
+    add_library(tello_control_panel_ui
         apps/control_panel/main_qt.cpp
     )
-    target_link_libraries(tello_control_panel tello_core ${TELLO_QT_WIDGETS_TARGET})
-    if(TELLO_ROS_CONTROL_PANEL_DEPS)
-        target_compile_definitions(tello_control_panel PRIVATE TELLO_CONTROL_PANEL_ROS_NATIVE=1)
-        ament_target_dependencies(tello_control_panel ${TELLO_ROS_CONTROL_PANEL_DEPS})
-    endif()
+    add_library(tello_core::tello_control_panel_ui ALIAS tello_control_panel_ui)
+    target_link_libraries(tello_control_panel_ui PUBLIC tello_core ${TELLO_QT_WIDGETS_TARGET})
+    target_include_directories(tello_control_panel_ui PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+
+    add_executable(tello_control_panel
+        apps/control_panel/main_qt_entry.cpp
+        apps/control_panel/standalone_backend.cpp
+    )
+    target_link_libraries(tello_control_panel PRIVATE tello_control_panel_ui)
+    add_test(NAME unit_control_panel_offscreen COMMAND tello_control_panel --smoke-test)
+    set_tests_properties(unit_control_panel_offscreen PROPERTIES
+        LABELS "unit;offline;gui"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 10
+    )
 else()
     add_executable(tello_control_panel
         apps/control_panel/main.cpp
@@ -140,8 +130,8 @@ else()
     message(STATUS "Qt Widgets not found; using OpenCV fallback for tello_control_panel")
 endif()
 
-# Enable testing
-enable_testing()
+# Enable CTest metadata for standalone CMake and colcon test discovery.
+include(CTest)
 
 option(ENABLE_HARDWARE_TESTS "Build and register hardware-dependent tests" OFF)
 
@@ -179,6 +169,15 @@ install(TARGETS tello_core tello_cli tello_control_panel
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+if(TARGET tello_control_panel_ui)
+    install(TARGETS tello_control_panel_ui
+        EXPORT tello_coreTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
 install(DIRECTORY include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
@@ -207,25 +206,9 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/tello_core
 )
 
+install(FILES package.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/tello_core)
+
 install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/control_profiles.json
     DESTINATION ${CMAKE_INSTALL_DATADIR}/tello_core
 )
-
-# Binary release packaging. GitHub Releases publish this runtime .tar.gz so ROS
-# users can install the runtime without cloning this full repo.
-set(CPACK_PACKAGE_NAME "tello_core")
-set(CPACK_PACKAGE_VENDOR "CS500")
-set(CPACK_PACKAGE_CONTACT "Gabriel Fernandes")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "C++ runtime, CLI, and Qt control panel for DJI Tello")
-set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}")
-set(CPACK_GENERATOR "TGZ")
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Gabriel Fernandes")
-set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
-set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "libavformat-dev, libavcodec-dev, libavutil-dev, libswscale-dev, pkg-config"
-)
-include(CPack)

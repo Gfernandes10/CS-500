@@ -2,7 +2,7 @@
 
 This repository contains the CS 500 DJI Tello project: a reusable C++17 runtime for the Tello SDK, command-line diagnostics, a Qt Control Panel, FFmpeg video decoding, telemetry/state recording, structured metrics, recovery behavior, and experiment/report material.
 
-The core runtime can be used directly from this repository, installed from a versioned release, or consumed by the separate [ROS2 integration repository](https://github.com/Gfernandes10/CS-500---ROS).
+The core runtime can be built directly with CMake or imported as source by the separate [ROS2 Foxy integration repository](https://github.com/Gfernandes10/CS-500---ROS).
 
 ## Main Components
 
@@ -120,24 +120,24 @@ The panel records user-visible messages with timestamps in the GUI metrics CSV. 
 
 The final repeated protocol defines three independent runs for the main command, telemetry, video, GUI, and RC experiments, plus recovery and ROS2 acceptance procedures.
 
-## Versioned Releases
+## Source Consumption
 
-GitHub Releases provide a runtime-only `tello_core.tar.gz` containing the public headers, static library, CMake package metadata, CLI, Qt Control Panel, and runtime resources.
-
-Downstream CMake projects can use the installed/extracted release with:
+The project installs CMake package metadata for downstream source builds:
 
 ```cmake
 find_package(tello_core REQUIRED)
 target_link_libraries(my_app PRIVATE tello_core::tello_core)
 ```
 
-See [Tello Core Release Install](docs/TELLO_CORE_RELEASE_INSTALL.md) for the release creation and consumption workflow.
+See [Tello Core Source Integration](docs/TELLO_CORE_SOURCE_INTEGRATION.md) for CMake and ROS workspace instructions.
 
 ## ROS2
 
-ROS2 Jazzy integration is maintained in [CS-500---ROS](https://github.com/Gfernandes10/CS-500---ROS). The ROS workspace consumes the versioned runtime artifact rather than cloning the academic documentation and experiment data.
+ROS2 Foxy integration is maintained in [CS-500---ROS](https://github.com/Gfernandes10/CS-500---ROS). Its `.repos` manifest imports the `dev` branch and builds `tello_core` for the local Ubuntu, Qt, FFmpeg, and ROS environment.
 
 In ROS mode, `tello_driver_node` is the sole owner of the Tello UDP command channel. It publishes telemetry, video, diagnostics, and aggregate link quality; accepts autonomous and manual velocity inputs; and exposes connection, flight, stream, and autonomy services.
+
+The reusable Qt widgets and operation logic live in `tello_core::tello_control_panel_ui`. The standalone executable injects `StandaloneBackend`; the ROS workspace builds `tello_control_panel_ros` with `RosBackend`. The core itself contains no ROS headers or libraries.
 
 After building and sourcing the ROS workspace:
 

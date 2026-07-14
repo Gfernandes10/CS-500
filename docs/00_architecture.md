@@ -39,14 +39,17 @@ The `tello_core` library owns the drone-specific SDK behavior. Applications shou
 - CLI applications print operator-facing status and errors to the terminal.
 - The Qt Control Panel displays operator-facing messages and records those timestamped log rows through `MetricsCollector`, so command, GUI, telemetry, and recovery events can be correlated after a run.
 
-### Applications
+### Applications And Backends
 
 - `tello_cli`: smoke, command-watch, telemetry-watch, and video-watch diagnostics.
 - `tello_control_panel`: Qt graphical application for connection, command execution, live FFmpeg video, telemetry plotting, CSV export, keyboard RC profiles, and operation diagnostics.
+- `tello_control_panel_ui`: reusable Qt widgets and common operation logic that depend on the ROS-neutral `ControlBackend` contract.
+- `StandaloneBackend`: owns `TelloClient`, `StateReceiver`, FFmpeg, keepalive, recovery, and direct UDP operation.
+- `RosBackend`: built only by the Foxy workspace and maps the same GUI contract to ROS topics and services.
 
 ### ROS2 Integration
 
-ROS2 support is delivered through a separate workspace. The ROS packages consume an installed or extracted `tello_core` runtime artifact instead of copying the academic workspace. In ROS mode, the ROS driver owns the command path and the Control Panel communicates through ROS topics/services.
+ROS2 support is delivered through a separate Foxy workspace. A `.repos` manifest imports the `dev` branch of this repository and `colcon` builds `tello_core` as a plain CMake package. In ROS mode, the ROS driver owns every drone UDP channel and `tello_control_panel_ros` communicates exclusively through topics and services.
 
 ## Folder-Level Architecture
 
@@ -70,7 +73,7 @@ ROS2 support is delivered through a separate workspace. The ROS packages consume
 ## Dependency Direction
 
 - CLI and Control Panel depend on `tello_core`.
-- ROS2 driver depends on the packaged/exported `tello_core` artifact.
+- ROS2 driver depends on the source-built and CMake-exported `tello_core` package.
 - `tello_core` depends on the C++ standard library, threads, and FFmpeg for video.
 - Qt is required for the primary graphical Control Panel.
 - OpenCV is only a fallback display dependency when Qt Widgets are unavailable; it is not the primary video runtime path.
@@ -92,7 +95,7 @@ Implemented:
 4. FFmpeg Stream video path for CLI and Control Panel.
 5. Central metrics schema with experiment metadata and aggregate link quality.
 6. Qt Control Panel with Config/Operation tabs, logging/export, live video, telemetry plot, keyboard RC profiles, RC worker, and asynchronous critical command worker.
-7. ROS2 integration through a separate workspace and release-artifact consumption model.
+7. ROS2 Foxy integration through a separate workspace, source manifest, shared UI library, and ROS-specific backend.
 8. Offline tests for state parsing and metrics collector behavior.
 
 Remaining future work:

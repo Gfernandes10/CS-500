@@ -543,7 +543,7 @@ Confirm that the released core artifact and ROS2 workspace form one working runt
 
 ```bash
 cd "/home/gabriel_fernandes/CS 500 - ROS"
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/foxy/setup.bash
 colcon build
 colcon test
 colcon test-result --verbose

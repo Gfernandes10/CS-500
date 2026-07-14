@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tello_core</name>
+  <version>1.0.0</version>
+  <description>ROS-independent C++ runtime and Qt control-panel UI for DJI Tello.</description>
+  <maintainer email="gabriel@example.com">Gabriel Fernandes</maintainer>
+  <license>MIT</license>
+
+  <build_depend>pkg-config</build_depend>
+  <build_depend>ffmpeg</build_depend>
+  <build_depend>qtbase5-dev</build_depend>
+
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>
