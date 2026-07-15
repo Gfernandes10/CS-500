@@ -10,7 +10,7 @@
 
 This project developed and evaluated a modular C++ software stack for communicating with, monitoring, and controlling a DJI Tello drone. A reusable core library owns UDP command execution, asynchronous telemetry, FFmpeg video decoding, runtime metrics, recovery, and safety-oriented RC control. Command-line tools and a Qt Control Panel reuse that core for diagnosis, live operation, visualization, CSV recording, and configurable keyboard flight. A ROS2 bridge was also implemented around the same core imported and built from source.
 
-Evaluation used repeated real-drone experiments spanning command latency, telemetry continuity, video decoding, GUI scheduling, grounded RC safety, airborne response, drone power-cycle recovery, and host Wi-Fi reconnection. An initially recurring 2.4-3.2 s command blackout under WSL2 motivated a controlled native-Linux reproduction. Every WSL2 command run contained a recovered interruption, whereas 708 native command samples completed with zero retry, timeout, or recovery and physical-interface captures contained a response for every request. Native telemetry remained near 9.88 Hz without gaps of 300 ms or more; native 960×720 video remained near 30 fps; GUI and flight runs retained fresh telemetry/video; grounded RC returned to neutral without unsafe nonzero output; and all recorded power-cycle and Wi-Fi interruption trials recovered. The results support native Linux as the deployment environment and demonstrate a reusable experimental basis for future closed-loop work.
+Evaluation used repeated real-drone experiments spanning command latency, telemetry continuity, video decoding, GUI scheduling, grounded RC safety, airborne response, drone power-cycle recovery, host Wi-Fi reconnection, and ROS2 integration. An initially recurring 2.4-3.2 s command blackout under WSL2 motivated a controlled native-Linux reproduction. Every WSL2 command run contained a recovered interruption, whereas 708 native command samples completed with zero retry, timeout, or recovery and physical-interface captures contained a response for every request. Native telemetry remained near 9.88 Hz without gaps of 300 ms or more; native 960×720 video remained near 30 fps; GUI and flight runs retained fresh telemetry/video; grounded RC returned to neutral without unsafe nonzero output; and all recorded power-cycle and Wi-Fi interruption trials recovered. Real-drone ROS2 acceptance exposed the expected graph and produced consecutive link-quality samples with score 100 and telemetry, video, and command classified as OK. The results support native Linux as the deployment environment and demonstrate a reusable experimental basis for future closed-loop work.
 
 ## 1. Introduction
 
@@ -83,11 +83,11 @@ Each value is typically in the range `-100` to `100`. A neutral command, `rc 0 0
 
 ## 3. System Architecture
 
-The project is centered on a reusable C++ core library that contains the drone-specific communication and processing logic. Applications such as the CLI tools and Qt Control Panel depend on this library instead of duplicating SDK, telemetry, video, and recovery behavior.
+The project is centered on a reusable C++ core library that contains the drone-specific communication and processing logic. The Qt interface is a separate reusable UI library whose behavior is expressed through a ROS-neutral `ControlBackend` contract. This allows the standalone and ROS executables to present the same widgets, plots, profiles, history, and CSV workflow while using different runtime owners.
 
 ![System architecture overview](images/system_architecture.svg)
 
-The diagram shows the main project boundary: the drone communicates over the SDK UDP channels, `tello_core` owns the reusable communication and processing logic, and each client uses that same core layer instead of reimplementing drone-specific behavior.
+The diagram separates shared source components from runtime ownership. In standalone mode, `tello_control_panel` combines the common UI with `StandaloneBackend`, while the CLI tools consume `tello_core` directly; whichever standalone process is active owns its drone UDP channels. In ROS mode, `tello_control_panel_ros` combines the same UI with `RosBackend` and communicates only through ROS topics and services; `tello_driver_node` is the sole ROS process that owns the core runtime and drone UDP channels.
 
 The main components are:
 
@@ -99,7 +99,11 @@ The main components are:
 - `VideoStreamReaderFfmpeg`: FFmpeg Stream reader for H264 video over UDP.
 - `MetricsCollector`: central runtime metrics aggregator and CSV export schema.
 - CLI applications: smoke commands, command watch, state watch, and video watch.
-- Qt Control Panel: graphical operation, visualization, keyboard control, and CSV export.
+- `tello_control_panel_ui`: reusable Qt widgets, plots, profiles, history, CSV, and common interaction logic.
+- `ControlBackend`: ROS-neutral DTO and capability contract between the common UI and a runtime backend.
+- `StandaloneBackend`: direct owner of the core client, telemetry, FFmpeg, keepalive, recovery, and workers used by `tello_control_panel`.
+- `RosBackend`: topic/service adapter used by `tello_control_panel_ros`; it does not open Tello UDP sockets.
+- `tello_driver_node`: ROS command broker and exclusive ROS-mode owner of `TelloClient`, `StateReceiver`, FFmpeg, and the drone UDP channels.
 
 The architecture separates transport, parsing, client state, metrics, and user interface. This also supports ROS2 integration, where the ROS layer wraps the core library instead of reimplementing the command, telemetry, video, and safety logic.
 
@@ -251,6 +255,8 @@ vcs import src < tello_ros2.repos
 source /opt/ros/foxy/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build
+colcon test
+colcon test-result --verbose
 ```
 
 If `rosdep` has not previously been initialized on the machine, `sudo rosdep init` and `rosdep update` must be run once before `rosdep install`. The `dev` branch selection for `CS-500` is stored in `tello_ros2.repos`, so no separate manual clone of the core repository is required.
@@ -315,7 +321,7 @@ The ROS launch path was also validated in real-drone operation through E10. The 
 
 ### 4.8 Standalone Build And Operation
 
-The core API can also be used without ROS. In standalone mode, the CLI tools and Qt Control Panel link directly against `tello_core` and communicate with the drone through the SDK UDP channels. This is the mode used for the real-drone experiments in this report.
+The core API can also be used without ROS. In standalone mode, the CLI tools and Qt Control Panel link directly against `tello_core` and communicate with the drone through the SDK UDP channels. This is the mode used for E1-E9; E10 separately validates the ROS runtime with the real drone.
 
 The supported distribution path is a source build. This ensures that FFmpeg, Qt5, glibc, and compiler-runtime dependencies match the target Ubuntu system. A downstream CMake project can install the source-built package locally and consume its exported target:
 
@@ -448,7 +454,7 @@ An accompanying continuous evidence video is available here: [CS 500 evidence vi
 
 The delivered driver node wraps the existing core library and publishes telemetry, battery, connection state, video frames, diagnostics, and aggregate link quality. It subscribes to normalized velocity commands on `/tello/cmd_vel`, converts them to Tello RC commands, and exposes services for connection management, takeoff, landing, emergency stop, stream control, autonomy enable/disable, and GUI command forwarding. The Qt Control Panel can be launched in ROS mode so that the GUI sends commands through the ROS broker instead of talking directly to the drone. Offline build and interface tests were performed with `colcon build`, `colcon test`, and ROS command-line tools. The launch path was also validated with the real drone by connecting through the ROS service path and confirming ROS-mode telemetry and video in the GUI.
 
-**Evidence included.** The ROS2 Integration section lists the delivered packages, topics, services, launch flow, command ownership model, command arbitration policy, and repository boundary. The accompanying evidence video shows the ROS2 workspace build, test run, custom packages, custom interfaces, and ROS-mode Control Panel launch. The final ROS build/test evidence showed four packages built successfully and four tests passing with zero errors, zero failures, and zero skipped tests.
+**Evidence included.** The ROS2 Integration section lists the delivered packages, topics, services, launch flow, command ownership model, command arbitration policy, and repository boundary. The accompanying evidence video shows the ROS2 workspace build, test run, custom packages, custom interfaces, and ROS-mode Control Panel launch. A clean Foxy verification of the current source built all five packages successfully, including source-built `tello_core`; `colcon test-result --verbose` summarized nine tests with zero errors, zero failures, and zero skipped tests.
 
 ### 5.7 Phase 6: Desktop GUI
 
@@ -740,7 +746,7 @@ The project uses CMake and C++17. Video support requires FFmpeg development pack
 
 ## Appendix D: Offline Tests
 
-The current offline test suite can be executed without a connected drone:
+The standalone offline test suite can be executed without a connected drone:
 
 ```bash
 cmake -E chdir build/tello_core_standalone \
@@ -755,4 +761,4 @@ The existing offline tests are:
 | `unit_metrics_collector` | validates central metrics aggregation, CSV output behavior, and quality-related metrics used by the experiment logs |
 | `unit_control_panel_offscreen` | starts the Qt Control Panel with the standalone backend using the offscreen platform and verifies clean initialization and shutdown |
 
-These tests cover the telemetry parser promised in the milestone plan and part of the metrics infrastructure used for evaluation. Additional offline tests for command retry behavior, UDP loopback behavior, `StateReceiver` runtime behavior, link-quality classification, and CSV schema stability would further harden the system, but those were not explicitly required as automated tests in the original milestone plan.
+These tests cover telemetry parsing, metrics and CSV behavior, and offscreen initialization/shutdown of the standalone Control Panel. In the ROS workspace, `test_rc_mapping` covers normalization, clamping, and SDK RC formatting, while `test_ros_backend` uses a fake driver node to exercise services, state, runtime metrics, frames, manual RC publication, and GUI-command forwarding. The current source-built Foxy workspace completes five packages and reports nine tests with zero errors, failures, or skips. Additional offline tests for command retry behavior, UDP loopback behavior, `StateReceiver` runtime behavior, link-quality classification, and CSV schema stability would further harden the system.
