@@ -11,11 +11,18 @@ The core runtime can be built directly with CMake or imported as source by the s
 - `tello_control_panel`: Qt application for live operation, video, telemetry plots, keyboard RC, logging, and CSV export.
 - `MetricsCollector`: central structured metrics and timestamped event-log schema used by CLI and GUI exports.
 - `docs`: architecture, channel documentation, experiment procedures, and final report draft.
-- `notebooks`: reproducible experiment analysis and report figures.
+- `results`: repeated-experiment CSVs, the final analysis notebook, and generated report figures.
+- `notebooks`: earlier development analyses retained for experiment history.
 
 ## Requirements
 
-On Ubuntu or Debian:
+The complete standalone implementation and repeated real-drone campaign were
+validated on Ubuntu 20.04.6 LTS (x86_64), Linux kernel 5.15, GCC 9.4.0, CMake
+3.16.3, FFmpeg 4.2.7, and Qt 5.12.8. The project requires C++17 and CMake 3.16
+or newer. Other compatible Ubuntu or Debian environments may work but were not
+part of the final validation campaign.
+
+Install the required build, FFmpeg, and Qt5 packages with:
 
 ```bash
 sudo apt update
@@ -114,7 +121,7 @@ The panel records user-visible messages with timestamps in the GUI metrics CSV. 
 
 - [Development experiment procedures](docs/08_experiments.md)
 - [Final repeated experiment protocol](docs/09_final_repeated_experiment_protocol.md)
-- [Final analysis notebook](notebooks/final_experiment_analysis.ipynb)
+- [Final repeated-experiment analysis notebook](results/final_repeated_experiment_analysis.ipynb)
 - [CS 500 final report draft](docs/CS500_final_report_draft.md)
 
 The final repeated protocol defines three independent runs for the main command, telemetry, video, GUI, and RC experiments, plus recovery and ROS2 acceptance procedures.
