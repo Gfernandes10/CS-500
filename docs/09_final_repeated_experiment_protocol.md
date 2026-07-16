@@ -378,12 +378,12 @@ Inspect outgoing UDP port 8889 traffic to verify the RC cadence seen by the netw
 
 ### Objective
 
-Measure command-to-motion response while RC, telemetry, FFmpeg video, GUI rendering, and recording operate simultaneously. E7 is the main full-system experiment.
+Measure command-to-motion response while RC, telemetry, FFmpeg video, GUI rendering, and recording operate simultaneously. E7 is the main full-system experiment. An RC aggression of `35` is used to make the commanded steps more distinguishable from normal hover variation, supporting command-aligned detection of response onset in the recorded state channels.
 
 ### Safety
 
 1. Use a clear indoor area and a charged battery.
-2. Keep aggression fixed at `25` for all repetitions.
+2. Keep aggression fixed at `35` for all repetitions.
 3. Use short pulses and wait for hover stabilization between pulses.
 4. Keep `land` and `emergency` immediately accessible.
 5. Stop the experiment if link quality becomes `STALE` or `BLACKOUT`.
@@ -400,10 +400,10 @@ state csv:       results/final_repeated/E7-KBD-RESPONSE-R01-state.csv
 ```
 
 2. Connect SDK mode, confirm FFmpeg video and telemetry, and start recording.
-3. Confirm the tested keyboard profile and aggression.
+3. Select the tested keyboard profile, set aggression to exactly `35`, and confirm the value before takeoff.
 4. Take off and hover for 10 seconds.
 5. Enable keyboard control.
-6. Execute two pulses per direction. Hold each pulse for approximately 500 ms and wait 3 seconds after release:
+6. Execute two pulses per direction. Begin each pulse only after the drone has returned to a visually stable hover, hold the key for approximately 500 ms, release it completely, and wait at least 3 seconds before the next pulse:
 
    - up, then down;
    - yaw left, then yaw right;
@@ -419,14 +419,15 @@ state csv:       results/final_repeated/E7-KBD-RESPONSE-R01-state.csv
 ### Primary Metrics
 
 1. RC command cadence and neutral-return time;
-2. vertical response from `h`/`tof`;
-3. yaw response from `yaw`;
-4. lateral/forward response using attitude proxies only when direct velocity is unavailable;
-5. telemetry and video freshness during flight;
-6. decoder FPS and errors;
-7. GUI timer delay and command mutex wait;
-8. takeoff/land SDK result and telemetry confirmation;
-9. link-quality transitions and RC safety override.
+2. command-to-response onset latency for each detectable pulse, aligned from the first nonzero RC sample to the first sustained state change above the pre-pulse hover variation;
+3. vertical response from `h`/`tof` and `vgz`;
+4. yaw response from `yaw`;
+5. lateral/forward response using attitude and available velocity fields as proxies when direct position is unavailable;
+6. telemetry and video freshness during flight;
+7. decoder FPS and errors;
+8. GUI timer delay and command mutex wait;
+9. takeoff/land SDK result and telemetry confirmation;
+10. link-quality transitions and RC safety override.
 
 ### Optional Packet-Capture Diagnosis
 

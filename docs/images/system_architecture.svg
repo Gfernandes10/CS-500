@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
-  <title id="title">CS-500 runtime architecture</title>
+  <title id="title">System architecture</title>
   <desc id="desc">The standalone and ROS2 paths reuse the same Qt user-interface library and converge on the same ROS-independent tello_core component. From tello_core onward, both deployments use the same UDP transport to communicate with the DJI Tello.</desc>
 
   <defs>
@@ -35,7 +35,7 @@
   </defs>
 
   <rect class="page" x="0" y="0" width="1400" height="900"/>
-  <text class="title" x="700" y="38" text-anchor="middle">CS-500 Runtime Architecture</text>
+  <text class="title" x="700" y="38" text-anchor="middle">System Architecture</text>
   <text class="subtitle" x="700" y="63" text-anchor="middle">Shared user interface and communication core across standalone and ROS2 deployments</text>
 
   <!-- Shared UI library -->

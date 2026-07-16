@@ -1,7 +1,7 @@
 {
     "profiles": [
         {
-            "aggression": 25,
+            "aggression": 35,
             "input_type": "keyboard",
             "key_bindings": {
                 "back": 83,
